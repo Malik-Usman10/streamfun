@@ -1,8 +1,8 @@
 // Database migration runner
-import { readdir, readFile } from 'fs/promises';
+import { readdir, readFile, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { pool } from './connection.js';
-import logger from '@utils/logger.js';
+import logger from '../utils/logger.js';
 
 interface Migration {
   id: number;
@@ -109,7 +109,7 @@ async function createMigration(name: string): Promise<void> {
   const filename = `${timestamp}_${name}.sql`;
   const filepath = join(process.cwd(), 'migrations', filename);
   
-  await Bun.write(filepath, '-- Add your migration SQL here\n');
+  await writeFile(filepath, '-- Add your migration SQL here\n');
   logger.info(`Created migration: ${filename}`);
 }
 

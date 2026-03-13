@@ -2,7 +2,7 @@
 FROM oven/bun:1.3-alpine AS base
 
 # Install system dependencies: ffmpeg (thumbnails), curl (healthcheck), rclone, pg_dump
-RUN apk add --no-cache ffmpeg curl bash postgresql16-client && \
+RUN apk add --no-cache unzip ffmpeg curl bash postgresql16-client && \
     curl https://rclone.org/install.sh | bash
 
 WORKDIR /app
