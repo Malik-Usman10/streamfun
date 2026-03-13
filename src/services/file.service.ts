@@ -5,6 +5,7 @@ import { ProviderFactory } from '../providers/provider.factory.js';
 import { TokenManager } from './token-manager.service.js';
 import { BandwidthTracker } from './bandwidth-tracker.service.js';
 import { FileEncryptionService } from './file-encryption.service.js';
+import { CacheService } from './cache.service.js';
 import type { ChunkManager } from './chunk-manager.service.js';
 import type { FileRecord, ProviderType } from '../types/index.js';
 import type { FileUpload } from '../types/provider.js';
@@ -19,7 +20,8 @@ export class FileService {
     private tokenManager: TokenManager,
     private bandwidthTracker: BandwidthTracker,
     private encryptionService: FileEncryptionService,
-    private chunkManager?: ChunkManager
+    private chunkManager?: ChunkManager,
+    private cacheService: CacheService = new CacheService()
   ) {}
 
   async uploadFile(
@@ -78,6 +80,92 @@ export class FileService {
     return fileRecord;
   }
 
+  async uploadFromUrl(
+    providerType: ProviderType,
+    url: string,
+    filename: string,
+    encrypt: boolean = false
+  ): Promise<FileRecord> {
+    logger.info({ url, filename, providerType }, 'Starting URL upload');
+    
+    // We don't know the exact size yet, assume 0 for initial account selection
+    const account = await this.accountRotator.selectAccountForUpload(providerType, 0);
+    const provider = this.providerFactory.getProvider(providerType);
+    
+    // Ensure token is fresh
+    await this.tokenManager.refreshIfNeeded(account, provider);
+
+    let providerFileId = filename;
+    let finalSize = 0;
+    let mimeType = 'application/octet-stream';
+    let encryptionKey: string | undefined;
+    let encryptionIv: string | undefined;
+
+    // If unencrypted AND the provider supports uploadFromUrl, let the provider do it directly 
+    if (!encrypt && provider.uploadFromUrl) {
+      logger.info({ url, providerName: provider.providerName }, 'Delegating URL upload directly to provider (bypassing stream constraints)');
+      
+      const result = await provider.uploadFromUrl(account, url, filename);
+      providerFileId = result.providerFileId;
+      
+      // If we need the real size, we might have to fetch it explicitly here, 
+      // but for bypassing, we skip downloading the size.
+    } else {
+      logger.info({ url, encrypt }, 'Downloading URL to server stream before upload');
+      const response = await fetch(url);
+      
+      if (!response.ok || !response.body) {
+         throw new Error(`Failed to fetch URL: ${response.status} ${response.statusText}`);
+      }
+      
+      finalSize = parseInt(response.headers.get('content-length') || '0', 10);
+      mimeType = response.headers.get('content-type') || mimeType;
+
+      let uploadStream = response.body;
+      
+      // Encrypt file if requested
+      if (encrypt) {
+        const encrypted = await this.encryptionService.encryptFile(uploadStream, filename);
+        uploadStream = encrypted.encryptedStream;
+        encryptionKey = encrypted.encryptionKey;
+        encryptionIv = encrypted.iv;
+      }
+      
+      const file: FileUpload = {
+        filename,
+        mimeType,
+        size: finalSize,
+        stream: uploadStream
+      };
+
+      const result = await this.uploadWithRetry(provider, account, file);
+      providerFileId = result.providerFileId;
+    }
+
+    // Store metadata
+    const fileRecord = await this.fileRepository.create({
+      filename,
+      mimeType,
+      size: finalSize,
+      providerType,
+      accountId: account.id,
+      providerFileId,
+      isChunked: false,
+      encryptionKey,
+      encryptionIv,
+      uploadedAt: new Date(),
+    });
+    
+    if (finalSize > 0) {
+      await this.accountRotator.updateAccountUsage(account.id, finalSize);
+      await this.bandwidthTracker.recordUsage(account.id, 'upload', finalSize);
+    }
+    
+    logger.info({ fileId: fileRecord.id }, 'URL File uploaded successfully');
+    
+    return fileRecord;
+  }
+
   private async uploadWithRetry(
     provider: any,
     account: any,
@@ -114,6 +202,14 @@ export class FileService {
       return await this.downloadChunkedFile(fileId, file);
     }
     
+    // Check Redis Stream Cache first
+    const cacheKey = `file:stream:${fileId}`;
+    const cachedStream = await this.cacheService.getStream(cacheKey);
+    if (cachedStream) {
+       logger.info({ fileId }, 'Serving single non-chunked file stream entirely from Redis cache');
+       return { stream: cachedStream, file };
+    }
+
     const account = await this.accountRotator.selectAccountForDownload(
       file.providerType,
       file.size
@@ -129,6 +225,10 @@ export class FileService {
       stream = await this.encryptionService.decryptFile(stream, file.encryptionKey, file.encryptionIv);
     }
     
+    // Cache the completely built and decrypted stream in Redis
+    // Set a reasonable TTL, like 6 hours
+    stream = this.cacheService.cacheStream(cacheKey, stream, 21600);
+
     await this.bandwidthTracker.recordUsage(account.id, 'download', file.size);
     
     return { stream, file };
@@ -139,9 +239,70 @@ export class FileService {
       throw new Error('ChunkManager not available for chunked file download');
     }
     
-    logger.info({ fileId }, 'Downloading chunked file');
+    logger.info({ fileId, isChunked: file.isChunked }, 'Downloading chunked file');
     
-    // Use ChunkManager to download and reconstruct file
+    // OPTIMIZATION: For single-chunk files, download directly without chunk manager overhead
+    const { ChunkRepository } = await import('../repositories/chunk.repository.js');
+    const chunkRepository = new ChunkRepository();
+    const chunks = await chunkRepository.getChunksByFileId(fileId);
+    
+    if (chunks.length === 1) {
+      logger.info({ fileId }, 'Single chunk detected, using direct download');
+      
+      const chunk = chunks[0];
+      const { AccountRepository } = await import('../repositories/account.repository.js');
+      const accountRepository = new AccountRepository();
+      const account = await accountRepository.findById(chunk.accountId);
+      
+      if (!account) {
+        throw new Error(`Account not found: ${chunk.accountId}`);
+      }
+      
+      const provider = this.providerFactory.getProvider(chunk.providerType);
+      let stream = await provider.downloadFile(account, chunk.providerFileId);
+      
+      // Decrypt if encrypted
+      if (file.encryptionKey && file.encryptionIv) {
+        logger.debug({ fileId, hasEncryption: true }, 'File is encrypted, decrypting single chunk');
+        
+        const reader = stream.getReader();
+        const chunks: Uint8Array[] = [];
+        
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+        }
+        
+        const encryptedData = Buffer.concat(chunks);
+        logger.debug({ 
+          fileId, 
+          encryptedSize: encryptedData.length,
+          keyLength: file.encryptionKey.length,
+          ivLength: file.encryptionIv.length 
+        }, 'About to decrypt single chunk');
+        
+        const decryptedData = await this.encryptionService.decryptChunk(
+          encryptedData,
+          file.encryptionKey,
+          file.encryptionIv,
+          0 // chunk index 0
+        );
+        
+        stream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(decryptedData);
+            controller.close();
+          },
+        });
+      }
+      
+      await this.bandwidthTracker.recordUsage(account.id, 'download', file.size);
+      
+      return { stream, file };
+    }
+    
+    // Use ChunkManager for multi-chunk files
     const stream = await this.chunkManager.downloadFileInChunks(fileId);
     
     return { stream, file };
@@ -224,6 +385,10 @@ export class FileService {
 
   async listFiles(options: any = {}) {
     return this.fileRepository.list(options);
+  }
+
+  async getCategories(fileType: 'image' | 'video') {
+    return this.fileRepository.getCategories(fileType);
   }
 
   async getFileMetadata(fileId: string): Promise<FileRecord> {

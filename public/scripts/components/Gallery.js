@@ -17,6 +17,8 @@ class Gallery {
     };
     this.unsubscribe = null;
     this.intersectionObserver = null;
+    this.infiniteScrollObserver = null;
+    this.renderedFileIds = new Set();
     
     this.init();
   }
@@ -35,9 +37,15 @@ class Gallery {
    * Cache DOM elements
    */
   cacheElements() {
-    this.elements.loadingState = document.getElementById('loading-state');
-    this.elements.galleryGrid = document.getElementById('gallery-grid');
-    this.elements.emptyState = document.getElementById('empty-state');
+    this.elements.loadingState = this.container.querySelector('.loading-state');
+    this.elements.galleryGrid = this.container.querySelector('.gallery-grid');
+    this.elements.emptyState = this.container.querySelector('.empty-state');
+    
+    // Create sentinel for infinite scroll
+    this.elements.sentinel = createElement('div', { 
+      className: 'scroll-sentinel',
+      style: { height: '20px', width: '100%', gridColumn: '1 / -1' }
+    });
   }
 
   /**
@@ -50,7 +58,7 @@ class Gallery {
           if (entry.isIntersecting) {
             const img = entry.target;
             const src = img.dataset.src;
-            
+
             if (src) {
               img.src = src;
               img.classList.add('loaded');
@@ -64,6 +72,18 @@ class Gallery {
         rootMargin: '50px'
       }
     );
+
+    this.infiniteScrollObserver = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          const state = appState.getState();
+          if (state.pagination.hasMore && !state.isLoadingMore) {
+            window.dispatchEvent(new CustomEvent('gallery:load-more'));
+          }
+        }
+      },
+      { rootMargin: '400px' }
+    );
   }
 
   /**
@@ -72,9 +92,9 @@ class Gallery {
   subscribeToState() {
     this.unsubscribe = appState.subscribe((newState, prevState) => {
       // Re-render when files or category changes
-      if (newState.files !== prevState.files || 
-          newState.currentCategory !== prevState.currentCategory ||
-          newState.isLoading !== prevState.isLoading) {
+      if (newState.files !== prevState.files ||
+        newState.currentCategory !== prevState.currentCategory ||
+        newState.isLoading !== prevState.isLoading) {
         this.render();
       }
     });
@@ -85,7 +105,7 @@ class Gallery {
    */
   render() {
     const state = appState.getState();
-    
+
     // Show loading state
     if (state.isLoading) {
       this.showLoading();
@@ -124,9 +144,9 @@ class Gallery {
     this.elements.emptyState.style.display = 'flex';
 
     // Update empty state text
-    const emptyTitle = document.getElementById('empty-title');
-    const emptyDescription = document.getElementById('empty-description');
-    
+    const emptyTitle = this.elements.emptyState.querySelector('h2');
+    const emptyDescription = this.elements.emptyState.querySelector('p');
+
     if (emptyTitle && emptyDescription) {
       if (category === 'videos') {
         emptyTitle.textContent = 'No videos yet';
@@ -147,14 +167,45 @@ class Gallery {
     this.elements.galleryGrid.style.display = 'grid';
     this.elements.emptyState.style.display = 'none';
 
-    // Clear existing items
-    this.elements.galleryGrid.innerHTML = '';
+    // If we're not loading more, and files length is smaller than our rendered set, it's a fresh load/delete
+    const state = appState.getState();
+    const isPaginationAppend = state.isLoadingMore || (files.length > this.renderedFileIds.size && state.pagination.page > 1);
 
-    // Render each file
+    if (!isPaginationAppend) {
+      this.elements.galleryGrid.innerHTML = '';
+      this.renderedFileIds.clear();
+      if (this.elements.sentinel) {
+        this.infiniteScrollObserver.unobserve(this.elements.sentinel);
+      }
+    } else {
+      // Remove sentinel temporarily so we can append items before it
+      if (this.elements.sentinel.parentNode === this.elements.galleryGrid) {
+        this.elements.galleryGrid.removeChild(this.elements.sentinel);
+      }
+    }
+
+    // Render each missing file
     files.forEach((file, index) => {
-      const item = this.createGalleryItem(file, index);
-      this.elements.galleryGrid.appendChild(item);
+      // If we are clearing everything, we rebuild the whole grid
+      // But we prevent adding duplicate elements
+      if (!this.renderedFileIds.has(file.id)) {
+        const item = this.createGalleryItem(file, index);
+        this.elements.galleryGrid.appendChild(item);
+        this.renderedFileIds.add(file.id);
+      }
     });
+
+    // Append and observe sentinel
+    this.elements.galleryGrid.appendChild(this.elements.sentinel);
+    if (state.pagination.hasMore || state.isLoadingMore) {
+      if (!this.elements.sentinel.querySelector('.spinner')) {
+        this.elements.sentinel.innerHTML = '<div class="spinner" style="width: 20px; height: 20px; margin: 0 auto;"></div>';
+      }
+      this.infiniteScrollObserver.observe(this.elements.sentinel);
+    } else {
+      this.elements.sentinel.innerHTML = '';
+      this.infiniteScrollObserver.unobserve(this.elements.sentinel);
+    }
   }
 
   /**
@@ -199,9 +250,9 @@ class Gallery {
       thumbnailWrapper.appendChild(this.createThumbnailPlaceholder());
     }
 
-    // Thumbnail overlay with play button (for videos/images)
-    if (isVideo || isImage) {
-      const overlay = createElement('div', { className: 'thumbnail-overlay' });
+    // Thumbnail overlay with appropriate icon
+    if (isVideo) {
+      const overlay = createElement('div', { className: 'thumbnail-overlay video-overlay' });
       const playButton = createElement('button', {
         className: 'play-button',
         'aria-label': `Play ${file.filename}`,
@@ -219,6 +270,30 @@ class Gallery {
 
       overlay.appendChild(playButton);
       thumbnailWrapper.appendChild(overlay);
+    } else if (isImage) {
+      // Remove overlay icon for images as per user request (cleaner UX)
+      const overlay = createElement('div', { className: 'thumbnail-overlay image-overlay' });
+      thumbnailWrapper.appendChild(overlay);
+    }
+
+    if (isVideo) {
+      // Add a small "Video" badge
+      const badge = createElement('div', { 
+        className: 'video-badge',
+        style: {
+          position: 'absolute',
+          top: '10px',
+          left: '10px',
+          background: 'rgba(0,0,0,0.7)',
+          padding: '4px 8px',
+          borderRadius: '4px',
+          color: 'white',
+          fontSize: '12px',
+          fontWeight: 'bold',
+          zIndex: '5'
+        }
+      }, 'VIDEO');
+      thumbnailWrapper.appendChild(badge);
     }
 
     // Make thumbnail wrapper clickable
@@ -232,7 +307,7 @@ class Gallery {
 
     // Item info
     const itemInfo = createElement('div', { className: 'item-info' });
-    
+
     const itemTitle = createElement('h3', {
       className: 'item-title',
       title: file.filename
@@ -268,9 +343,26 @@ class Gallery {
       </svg>
     `;
 
+    const renameBtn = createElement('button', {
+      className: 'btn-icon',
+      'aria-label': `Rename ${file.filename}`,
+      title: 'Rename',
+      onClick: (e) => {
+        e.stopPropagation();
+        this.handleRenameClick(file);
+      }
+    });
+    renameBtn.innerHTML = `
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+      </svg>
+    `;
+
     const deleteBtn = createElement('button', {
       className: 'btn-icon btn-danger',
       'aria-label': `Delete ${file.filename}`,
+      title: 'Delete',
       onClick: (e) => {
         e.stopPropagation();
         this.handleDeleteClick(file);
@@ -284,10 +376,40 @@ class Gallery {
     `;
 
     itemActions.appendChild(downloadBtn);
+    itemActions.appendChild(renameBtn);
     itemActions.appendChild(deleteBtn);
     article.appendChild(itemActions);
 
     return article;
+  }
+
+  /**
+   * Handle rename click
+   * @param {Object} file - File object
+   */
+  async handleRenameClick(file) {
+    const newName = prompt('Enter new filename:', file.filename);
+    if (!newName || newName === file.filename) return;
+
+    try {
+      const response = await fetch(`/api/files/${file.id}/rename`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename: newName })
+      });
+
+      if (!response.ok) throw new Error('Failed to rename file');
+      
+      const data = await response.json();
+      if (data.success) {
+        // Update local state or trigger refresh
+        window.showNotification('File renamed successfully', 'success');
+        this.render(); // Re-render to show new name
+      }
+    } catch (error) {
+      console.error('Rename error:', error);
+      window.showNotification(error.message, 'error');
+    }
   }
 
   /**
@@ -311,9 +433,18 @@ class Gallery {
    * @param {Object} file - File object
    */
   handlePlayClick(file) {
-    // Dispatch custom event for media player
+    // Get current file list from state
+    const state = appState.getState();
+    const fileList = appState.getFilteredFiles();
+    const index = fileList.findIndex(f => f.id === file.id);
+
+    // Dispatch custom event for media player with file list
     window.dispatchEvent(new CustomEvent('media:play', {
-      detail: { file }
+      detail: {
+        file,
+        fileList,
+        index
+      }
     }));
   }
 
@@ -352,10 +483,15 @@ class Gallery {
     if (this.intersectionObserver) {
       this.intersectionObserver.disconnect();
     }
+    
+    if (this.infiniteScrollObserver) {
+      this.infiniteScrollObserver.disconnect();
+    }
 
     // Clear gallery
     if (this.elements.galleryGrid) {
       this.elements.galleryGrid.innerHTML = '';
+      this.renderedFileIds.clear();
     }
   }
 }

@@ -60,6 +60,7 @@ export function createAccountRoutes(accountService: AccountService): Router {
           quotaPercent: account.quotaUsagePercent,
           lastUsed: account.lastUsedAt,
           healthStatus: account.healthError ? 'error' : 'healthy',
+          identifier: account.accountIdentifier,
         })),
       });
     } catch (error) {

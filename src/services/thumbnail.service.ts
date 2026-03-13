@@ -1,10 +1,11 @@
 // Thumbnail generation service for videos and images
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { unlink, readFile } from 'fs/promises';
+import { unlink, readFile, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { v4 as uuidv4 } from 'uuid';
+import sharp from 'sharp';
 import logger from '../utils/logger.js';
 
 const execAsync = promisify(exec);
@@ -68,35 +69,21 @@ export class ThumbnailService {
     imagePath: string,
     options: ThumbnailOptions = {}
   ): Promise<string> {
-    const { width = this.defaultWidth, height = this.defaultHeight } = options;
-    const outputPath = join(tmpdir(), `thumb-${uuidv4()}.jpg`);
+    const { width = this.defaultWidth, height = this.defaultHeight, quality = this.defaultQuality } = options;
 
     try {
-      // Resize image using ffmpeg
-      await execAsync(
-        `ffmpeg -i "${imagePath}" -vf "scale=${width}:${height}:force_original_aspect_ratio=decrease" -q:v 2 "${outputPath}"`,
-        { timeout: 30000 }
-      );
+      const buffer = await sharp(imagePath)
+        .resize(width, height, { fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality })
+        .toBuffer();
 
-      // Read thumbnail and convert to base64
-      const thumbnailBuffer = await readFile(outputPath);
-      const base64 = thumbnailBuffer.toString('base64');
+      const base64 = buffer.toString('base64');
       const dataUrl = `data:image/jpeg;base64,${base64}`;
 
-      // Clean up temp file
-      await unlink(outputPath);
-
-      logger.info({ imagePath }, 'Image thumbnail generated');
-
+      logger.info({ imagePath }, 'Image thumbnail generated using Sharp');
       return dataUrl;
     } catch (error: any) {
-      logger.error({ error: error.message, imagePath }, 'Failed to generate image thumbnail');
-      
-      // Clean up on error
-      try {
-        await unlink(outputPath);
-      } catch {}
-      
+      logger.error({ error: error.message, imagePath }, 'Failed to generate image thumbnail with Sharp');
       throw new Error(`Thumbnail generation failed: ${error.message}`);
     }
   }
@@ -109,32 +96,34 @@ export class ThumbnailService {
     mimeType: string,
     options: ThumbnailOptions = {}
   ): Promise<string> {
-    const tempInputPath = join(tmpdir(), `input-${uuidv4()}`);
-    
     try {
-      // Write buffer to temp file
-      await require('fs/promises').writeFile(tempInputPath, buffer);
-      
-      // Generate thumbnail based on MIME type
-      let thumbnail: string;
-      if (mimeType.startsWith('video/')) {
-        thumbnail = await this.generateVideoThumbnail(tempInputPath, options);
-      } else if (mimeType.startsWith('image/')) {
-        thumbnail = await this.generateImageThumbnail(tempInputPath, options);
+      if (mimeType.startsWith('image/')) {
+        const { width = this.defaultWidth, height = this.defaultHeight, quality = this.defaultQuality } = options;
+        const outBuffer = await sharp(buffer)
+          .resize(width, height, { fit: 'inside', withoutEnlargement: true })
+          .jpeg({ quality })
+          .toBuffer();
+
+        const base64 = outBuffer.toString('base64');
+        return `data:image/jpeg;base64,${base64}`;
+      } else if (mimeType.startsWith('video/')) {
+        // For video, we still need to write to disk for ffmpeg
+        const ext = mimeType.split('/')[1] || 'bin';
+        const tempInputPath = join(tmpdir(), `input-${uuidv4()}.${ext}`);
+        
+        try {
+          await writeFile(tempInputPath, buffer);
+          const thumbnail = await this.generateVideoThumbnail(tempInputPath, options);
+          await unlink(tempInputPath);
+          return thumbnail;
+        } catch (error) {
+          try { await unlink(tempInputPath); } catch {}
+          throw error;
+        }
       } else {
         throw new Error(`Unsupported MIME type for thumbnail: ${mimeType}`);
       }
-      
-      // Clean up input file
-      await unlink(tempInputPath);
-      
-      return thumbnail;
     } catch (error: any) {
-      // Clean up on error
-      try {
-        await unlink(tempInputPath);
-      } catch {}
-      
       throw error;
     }
   }

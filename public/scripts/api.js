@@ -109,12 +109,67 @@ async function apiCallWithRetry(url, options = {}, retries = MAX_RETRIES) {
  */
 const api = {
   /**
-   * Fetch all files
+   * Fetch all files with full pagination response
+   * @param {Object} options - Query options
+   * @returns {Promise<Object>} Object containing items and pagination details
+   */
+  async fetchFilesPaginated(options = {}) {
+    const params = new URLSearchParams();
+
+    if (options.category) {
+      params.append('category', options.category);
+    }
+
+    if (options.type) {
+      params.append('type', options.type);
+    }
+
+    if (options.page) {
+      params.append('page', options.page);
+    }
+
+    if (options.limit) {
+      params.append('limit', options.limit);
+    }
+
+    const url = `${API_BASE}/files/gallery${params.toString() ? '?' + params.toString() : ''}`;
+    return await apiCallWithRetry(url);
+  },
+
+  /**
+   * Search for files
+   * @param {Object} options - Search options (q, type, etc.)
+   * @returns {Promise<Object>} Search results with pagination
+   */
+  async fetchFilesSearch(options = {}) {
+    const params = new URLSearchParams();
+    if (options.q) params.append('q', options.q);
+    if (options.type) params.append('type', options.type);
+    if (options.page) params.append('page', options.page);
+    if (options.limit) params.append('limit', options.limit);
+
+    const url = `${API_BASE}/files/search?${params.toString()}`;
+    return await apiCallWithRetry(url);
+  },
+
+  /**
+   * Legacy Fetch all files
+   * @param {Object} options - Query options
    * @returns {Promise<Array>} Array of file objects
    */
-  async fetchFiles() {
-    const data = await apiCallWithRetry(`${API_BASE}/files`);
-    return data.files || [];
+  async fetchFiles(options = {}) {
+    const data = await this.fetchFilesPaginated(options);
+    return data.items || [];
+  },
+
+  /**
+   * Fetch categories for a file type
+   * @param {string} fileType - 'image' or 'video'
+   * @returns {Promise<Array>} Array of category objects
+   */
+  async fetchCategories(fileType) {
+    const data = await apiCallWithRetry(`${API_BASE}/files/categories?type=${fileType}`);
+    return data.categories || [];
   },
 
   /**
@@ -153,24 +208,52 @@ const api = {
       body: JSON.stringify(initBody)
     });
 
-    // Step 2: Upload chunks
-    for (let i = 0; i < totalChunks; i++) {
-      const start = i * chunkSize;
+    // Step 2: Upload chunks in parallel for maximum speed
+    const PARALLEL_UPLOADS = 3;
+    let completedChunks = 0;
+
+    async function uploadSingleChunk(index) {
+      const start = index * chunkSize;
       const end = Math.min(start + chunkSize, file.size);
-      const chunk = file.slice(start, end);
+      const chunkBlob = file.slice(start, end);
 
-      await fetch(`${API_BASE}/files/upload/chunked/${fileId}/chunk/${i}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/octet-stream' },
-        body: chunk
-      });
+      const MAX_RETRIES = 3;
+      for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          const resp = await fetch(`${API_BASE}/files/upload/chunked/${fileId}/chunk/${index}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/octet-stream' },
+            body: chunkBlob
+          });
+          if (!resp.ok) {
+            throw new Error(`Chunk ${index} upload failed: ${resp.status}`);
+          }
 
-      // Report progress
-      if (onProgress) {
-        const progress = Math.round(((i + 1) / totalChunks) * 100);
-        onProgress(progress);
+          completedChunks++;
+          if (onProgress) {
+            onProgress(Math.round((completedChunks / totalChunks) * 100));
+          }
+          return;
+        } catch (err) {
+          if (attempt === MAX_RETRIES) throw err;
+          // Exponential backoff before retry
+          await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 500));
+        }
       }
     }
+
+    // Pool-based parallel upload: keep PARALLEL_UPLOADS in-flight at all times
+    const pool = [];
+    for (let i = 0; i < totalChunks; i++) {
+      const p = uploadSingleChunk(i).then(() => {
+        pool.splice(pool.indexOf(p), 1);
+      });
+      pool.push(p);
+      if (pool.length >= PARALLEL_UPLOADS) {
+        await Promise.race(pool);
+      }
+    }
+    await Promise.all(pool);
 
     // Step 3: Complete upload
     const result = await apiCall(`${API_BASE}/files/upload/chunked/${fileId}/complete`, {
@@ -188,7 +271,7 @@ const api = {
    */
   async downloadFile(fileId, filename) {
     const response = await fetch(`${API_BASE}/files/${fileId}/download`);
-    
+
     if (!response.ok) {
       throw new APIError(response.status, 'Failed to download file');
     }
@@ -251,18 +334,43 @@ const api = {
    * @param {string} accountId - Account ID
    * @returns {Promise<Object>} Delete result
    */
-  async deleteAccount(accountId) {
-    return await apiCall(`${API_BASE}/accounts/${accountId}`, {
-      method: 'DELETE'
-    });
-  },
-
   /**
    * Fetch dashboard statistics
    * @returns {Promise<Object>} Statistics object
    */
   async fetchStats() {
     return await apiCallWithRetry(`${API_BASE}/dashboard/stats`);
+  },
+
+  /**
+   * Fetch backup configuration
+   * @returns {Promise<Object>} Backup configuration and status
+   */
+  async fetchBackupConfig() {
+    return await apiCallWithRetry(`${API_BASE}/backup/config`);
+  },
+
+  /**
+   * Update backup configuration
+   * @param {Object} data - { destination, frequency }
+   * @returns {Promise<Object>} Update result
+   */
+  async updateBackupConfig(data) {
+    return await apiCallWithRetry(`${API_BASE}/backup/config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+  },
+
+  /**
+   * Trigger manual backup
+   * @returns {Promise<Object>} Trigger result
+   */
+  async triggerBackup() {
+    return await apiCallWithRetry(`${API_BASE}/backup/trigger`, {
+      method: 'POST'
+    });
   }
 };
 

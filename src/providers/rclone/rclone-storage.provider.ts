@@ -61,11 +61,18 @@ export class RcloneStorageProvider implements IStorageProvider {
 
       logger.info({ remoteName, remotePath }, 'Rclone remote authenticated successfully');
 
+      // For Blomp/Swift, if remotePath is not set, use the user email as the default bucket
+      let finalRemotePath = remotePath;
+      if (!finalRemotePath && this.providerType === 'blomp' && (credentials.data as any).user) {
+        finalRemotePath = (credentials.data as any).user;
+        logger.info({ remoteName, finalRemotePath }, 'Using Blomp user as default remotePath');
+      }
+
       return {
         success: true,
         sessionData: {
           remoteName,
-          remotePath,
+          remotePath: finalRemotePath,
         },
       };
     } catch (error: any) {
@@ -335,12 +342,15 @@ export class RcloneStorageProvider implements IStorageProvider {
     const remotePath = await this.getRemotePath(account);
 
     try {
+      // Swift/Blomp doesn't support public links via rclone link
+      if (account.providerType === 'blomp') {
+        throw new Error('Public links not supported for this provider');
+      }
+
       const remoteFilePath = remotePath
         ? `${remoteName}:${remotePath}/${fileId}`
         : `${remoteName}:${fileId}`;
 
-      // Use rclone serve http to generate a temporary streaming link
-      // Note: This is a simplified approach. In production, you'd want a persistent rclone serve process
       const { stdout } = await execAsync(`rclone link "${remoteFilePath}"`, {
         timeout: 10000,
       });
@@ -350,22 +360,36 @@ export class RcloneStorageProvider implements IStorageProvider {
         expiresAt: new Date(Date.now() + 3600000), // 1 hour
       };
     } catch (error: any) {
-      // Fallback: return a local serve URL
-      logger.warn({ error: error.message }, 'Rclone link failed, using fallback');
+      // Fallback: return a local serve URL that our app handles
+      logger.info({ fileId, provider: account.providerType }, 'Using internal streaming fallback');
+      
+      // In a real environment, this should be the public URL of the app
+      const baseUrl = process.env.API_BASE_URL || 'http://localhost:3000';
       return {
-        url: `http://localhost:8080/serve/${fileId}`,
-        expiresAt: new Date(Date.now() + 3600000),
+        url: `${baseUrl}/api/files/${fileId}/play`,
+        expiresAt: new Date(Date.now() + 86400000), // 24 hours
       };
     }
   }
 
   async getQuotaInfo(account: Account): Promise<QuotaInfo> {
     const remoteName = await this.getRemoteName(account);
+    const remotePath = await this.getRemotePath(account);
 
     try {
-      const { stdout } = await execAsync(`rclone about ${remoteName}: --json`, {
-        timeout: 10000,
+      // Use the remote name and path for the about command
+      // Swift/Blomp requires a container/bucket name (which we store in remotePath)
+      const target = remotePath ? `${remoteName}:${remotePath}` : `${remoteName}:`;
+      
+      logger.debug({ remoteName, target }, 'Fetching quota info for remote');
+      
+      const { stdout, stderr } = await execAsync(`rclone about "${target}" --json`, {
+        timeout: 20000, // Increased timeout to 20s for slow providers like GDrive
       });
+
+      if (stderr && stderr.includes('NOTICE')) {
+         logger.debug({ stderr }, 'Rclone about notice');
+      }
 
       const aboutInfo = JSON.parse(stdout);
 
@@ -376,12 +400,11 @@ export class RcloneStorageProvider implements IStorageProvider {
         unit: 'bytes',
       };
     } catch (error: any) {
-      logger.warn({ error: error.message }, 'Failed to get quota info, using defaults');
-      // Return default quota if command fails
+      logger.warn({ error: error.message, remoteName }, 'Failed to get quota info from rclone');
       return {
-        total: 100 * 1024 * 1024 * 1024, // 100 GB default
+        total: 0,
         used: 0,
-        available: 100 * 1024 * 1024 * 1024,
+        available: 0,
         unit: 'bytes',
       };
     }
@@ -435,7 +458,22 @@ export class RcloneStorageProvider implements IStorageProvider {
     try {
       const decrypted = await this.encryptionService.decrypt(account.tokensEncrypted);
       const sessionData = JSON.parse(decrypted);
-      return sessionData.remotePath || '';
+      
+      if (sessionData.remotePath) {
+        return sessionData.remotePath;
+      }
+
+      // Fallback for Blomp/Swift existing accounts
+      if (account.providerType === 'blomp' && account.credentialsEncrypted) {
+        const credsDecrypted = await this.encryptionService.decrypt(account.credentialsEncrypted);
+        const credentials = JSON.parse(credsDecrypted);
+        if (credentials.data && credentials.data.user) {
+          logger.info({ accountId: account.id }, 'Using legacy Blomp user fallback for remotePath');
+          return credentials.data.user;
+        }
+      }
+
+      return '';
     } catch {
       return '';
     }

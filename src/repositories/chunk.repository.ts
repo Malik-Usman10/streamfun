@@ -124,11 +124,8 @@ export class ChunkRepository {
     const file = fileResult.rows[0];
     const chunks = await this.getChunksByFileId(fileId);
     
-    if (chunks.length === 0) {
-      return null;
-    }
-    
-    const chunkSize = chunks[0].chunkSize;
+    // Default to a sane chunk size if no chunks exist yet (e.g. from appConfig)
+    const chunkSize = chunks.length > 0 ? chunks[0].chunkSize : 10 * 1024 * 1024;
     
     return {
       fileId,

@@ -3,6 +3,7 @@ import { Request, Response, NextFunction } from 'express';
 import { pool } from '../database/connection.js';
 import crypto from 'crypto';
 import logger from '../utils/logger.js';
+import { AuthService } from '../services/auth.service.js';
 
 export interface AuthenticatedRequest extends Request {
   apiKey?: {
@@ -172,4 +173,38 @@ export async function optionalAuth(
   
   // Auth provided, validate it
   await authenticateApiKey(req, res, next);
+}
+
+const authService = new AuthService();
+
+/**
+ * Middleware to require JWT user authentication if enabled in settings
+ */
+export async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const isEnabled = await authService.isAuthEnabled();
+    
+    // Pass strictly through if auth is disabled
+    if (!isEnabled) {
+      return next();
+    }
+
+    const token = req.cookies?.auth_token;
+
+    if (!token) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    const isValid = authService.verifyToken(token);
+    
+    if (!isValid) {
+      res.status(401).json({ error: 'Invalid or expired authentication' });
+      return;
+    }
+
+    next();
+  } catch (error) {
+    next(error);
+  }
 }

@@ -96,6 +96,85 @@ export class CacheService {
   }
 
   /**
+   * Wraps an incoming ReadableStream so that chunks are saved to Redis while
+   * they are simultaneously passed through to the consumer. 
+   * Useful for caching single files or decrypted chunks on-the-fly.
+   */
+  cacheStream(key: string, stream: ReadableStream, ttl: number = 3600): ReadableStream {
+    // Array to collect buffer pieces as they fly by
+    const chunks: Uint8Array[] = [];
+    let streamFailed = false;
+
+    return new ReadableStream({
+      async start(controller) {
+        const reader = stream.getReader();
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            
+            if (done) break;
+
+            chunks.push(value);
+            controller.enqueue(value);
+          }
+        } catch (error) {
+          logger.error({ error, key }, 'Error reading stream to cache');
+          streamFailed = true;
+          controller.error(error);
+        } finally {
+          reader.releaseLock();
+          controller.close();
+
+          // Only cache it if it successfully finished without errors
+          if (!streamFailed && chunks.length > 0) {
+            try {
+              const fullBuffer = Buffer.concat(chunks);
+              // Save asynchronously without blocking the user's download completion
+              redis.setex(key, ttl, fullBuffer).catch(err => {
+                logger.error({ error: err, key }, 'Failed to save concated stream to redis');
+              });
+              logger.debug({ key, size: fullBuffer.length, ttl }, 'Stream fully cached to Redis');
+            } catch (concatErr) {
+               logger.error({ error: concatErr, key }, 'Failed to concat stream chunks for redis');
+            }
+          }
+        }
+      },
+      cancel(reason) {
+         stream.cancel(reason);
+         streamFailed = true; // prevent partial caching
+      }
+    });
+  }
+
+  /**
+   * Get a ReadableStream from a fully buffered Redis cache key.
+   * Useful for instant-streaming previously cached media.
+   * @returns ReadableStream or null if missing
+   */
+  async getStream(key: string): Promise<ReadableStream | null> {
+    try {
+      // Memory warning: getBuffer fetches the whole thing at once into Node memory.
+      // This is acceptable for small files or individual 50MB chunks.
+      const buffer = await this.getBuffer(key);
+      if (!buffer) return null;
+
+      logger.debug({ key, size: buffer.length }, 'Serving stream directly from Redis memory');
+      
+      return new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array(buffer));
+          controller.close();
+        }
+      });
+    } catch (error) {
+      logger.error({ error, key }, 'Cache getStream failed');
+      return null;
+    }
+  }
+
+  /**
    * Get cache statistics
    */
   async getStats(): Promise<{ keys: number; memory: string }> {

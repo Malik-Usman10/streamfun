@@ -11,13 +11,13 @@ export function createChunkedUploadRoutes(chunkManager: ChunkManager): Router {
   router.post('/init', async (req, res, next) => {
     try {
       const { filename, size, chunkSize, provider, mimeType, encrypt = true, collectionName } = req.body;
-      
+
       if (!filename || !size || !provider) {
-        return res.status(400).json({ 
-          error: 'Filename, size, and provider required' 
+        return res.status(400).json({
+          error: 'Filename, size, and provider required'
         });
       }
-      
+
       // Validate and convert provider string to ProviderType
       const providerMap: Record<string, ProviderType> = {
         'google_drive': ProviderType.GOOGLE_DRIVE,
@@ -26,17 +26,17 @@ export function createChunkedUploadRoutes(chunkManager: ChunkManager): Router {
         'filen': ProviderType.FILEN,
         'blomp': ProviderType.BLOMP,
       };
-      
+
       const providerType = providerMap[provider];
       if (!providerType) {
-        return res.status(400).json({ 
-          error: `Invalid provider: ${provider}. Valid providers: google_drive, koofr, terabox, filen, blomp` 
+        return res.status(400).json({
+          error: `Invalid provider: ${provider}. Valid providers: google_drive, koofr, terabox, filen, blomp`
         });
       }
-      
+
       const finalChunkSize = chunkSize || 10 * 1024 * 1024; // Default 10 MB
       const totalChunks = Math.ceil(size / finalChunkSize);
-      
+
       // Create file record
       const fileId = await chunkManager.initializeChunkedUpload({
         filename,
@@ -48,7 +48,7 @@ export function createChunkedUploadRoutes(chunkManager: ChunkManager): Router {
         encrypt,
         collectionName,
       });
-      
+
       res.status(201).json({
         fileId,
         totalChunks,
@@ -64,22 +64,22 @@ export function createChunkedUploadRoutes(chunkManager: ChunkManager): Router {
     try {
       const { fileId, chunkIndex } = req.params;
       const index = parseInt(chunkIndex);
-      
+
       if (isNaN(index) || index < 0) {
         return res.status(400).json({ error: 'Invalid chunk index' });
       }
-      
+
       // Get chunk data from request body (simplified - in production use streaming)
       const chunks: Buffer[] = [];
       req.on('data', (chunk) => chunks.push(chunk));
-      
+
       await new Promise((resolve, reject) => {
         req.on('end', resolve);
         req.on('error', reject);
       });
-      
+
       const chunkData = Buffer.concat(chunks);
-      
+
       // Create ReadableStream from buffer
       const stream = new ReadableStream({
         start(controller) {
@@ -87,12 +87,45 @@ export function createChunkedUploadRoutes(chunkManager: ChunkManager): Router {
           controller.close();
         },
       });
-      
+
       await chunkManager.uploadChunkData(fileId, index, stream, chunkData.length);
-      
-      res.json({ 
+
+      res.json({
         success: true,
         chunkIndex: index,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Batch upload multiple chunks in parallel
+  router.post('/:fileId/chunks', async (req, res, next) => {
+    try {
+      const { fileId } = req.params;
+      const { chunks: chunkEntries } = req.body;
+
+      if (!Array.isArray(chunkEntries) || chunkEntries.length === 0) {
+        return res.status(400).json({ error: 'chunks array is required' });
+      }
+
+      // Convert base64 chunks to streams
+      const chunkInputs = chunkEntries.map((entry: { index: number; data: string }) => {
+        const buffer = Buffer.from(entry.data, 'base64');
+        const stream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(buffer);
+            controller.close();
+          },
+        });
+        return { index: entry.index, stream, size: buffer.length };
+      });
+
+      const result = await chunkManager.uploadChunksInParallel(fileId, chunkInputs);
+
+      res.json({
+        successful: result.successful,
+        failed: result.failed,
       });
     } catch (error) {
       next(error);
@@ -104,7 +137,7 @@ export function createChunkedUploadRoutes(chunkManager: ChunkManager): Router {
     try {
       const { fileId } = req.params;
       const progress = await chunkManager.getUploadProgress(fileId);
-      
+
       res.json({
         fileId,
         totalChunks: progress.totalChunks,
@@ -122,7 +155,7 @@ export function createChunkedUploadRoutes(chunkManager: ChunkManager): Router {
     try {
       const { fileId } = req.params;
       const file = await chunkManager.finalizeChunkedUpload(fileId);
-      
+
       res.json({
         success: true,
         file: {
@@ -143,10 +176,10 @@ export function createChunkedUploadRoutes(chunkManager: ChunkManager): Router {
   router.post('/:fileId/resume', async (req, res, next) => {
     try {
       const { fileId } = req.params;
-      
+
       // Get missing chunks
       const progress = await chunkManager.getUploadProgress(fileId);
-      
+
       res.json({
         fileId,
         missingChunks: progress.missingChunks || [],

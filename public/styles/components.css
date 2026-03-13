@@ -387,7 +387,7 @@
 .error-display.network {
   background-color: rgba(33, 150, 243, 0.1);
   border-color: rgba(33, 150, 243, 0.3);
-  color: var(--primary-color);
+  color: var(--color-primary);
 }
 
 .error-display .error-icon {

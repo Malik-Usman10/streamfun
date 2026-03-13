@@ -110,6 +110,13 @@ export class FileEncryptionService {
     chunkIndex: number
   ): Promise<Buffer> {
     try {
+      logger.debug({ 
+        chunkIndex, 
+        encryptedSize: encryptedChunk.length,
+        keyLength: encryptionKey.length,
+        ivLength: iv.length 
+      }, 'Starting chunk decryption');
+      
       const fileKey = await this.decryptKey(Buffer.from(encryptionKey, 'base64'));
       const ivBuffer = Buffer.from(iv, 'base64');
       
@@ -119,14 +126,28 @@ export class FileEncryptionService {
       const decipher = crypto.createDecipheriv(this.algorithm, fileKey, chunkIv) as crypto.DecipherGCM;
       
       // Extract auth tag (last 16 bytes)
+      if (encryptedChunk.length < 16) {
+        throw new Error(`Encrypted chunk too small: ${encryptedChunk.length} bytes, need at least 16 for auth tag`);
+      }
+      
       const authTag = encryptedChunk.slice(-16);
       const ciphertext = encryptedChunk.slice(0, -16);
       
+      logger.debug({ 
+        chunkIndex, 
+        ciphertextLength: ciphertext.length,
+        authTagLength: authTag.length 
+      }, 'Decryption parameters extracted');
+      
       decipher.setAuthTag(authTag);
       
-      return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+      const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+      
+      logger.debug({ chunkIndex, decryptedSize: decrypted.length }, 'Chunk decryption successful');
+      
+      return decrypted;
     } catch (error) {
-      logger.error({ error, chunkIndex }, 'Chunk decryption failed');
+      logger.error({ error, chunkIndex, encryptedSize: encryptedChunk.length }, 'Chunk decryption failed');
       throw new EncryptionError(`Failed to decrypt chunk ${chunkIndex}`);
     }
   }

@@ -373,3 +373,18 @@ export function qsa(selector, parent = document) {
     return [];
   }
 }
+
+/**
+ * Escape HTML special characters to prevent XSS
+ * @param {string} unsafe - Unsafe string
+ * @returns {string} Escaped string
+ */
+export function escapeHtml(unsafe) {
+  if (!unsafe && unsafe !== 0) return '';
+  return String(unsafe)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}

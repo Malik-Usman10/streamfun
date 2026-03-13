@@ -226,34 +226,34 @@ class RemoteConfigWizard {
             <p>OAuth authentication</p>
           </button>
           
-          <button class="provider-card" data-provider="webdav-blomp">
+          <button class="provider-card" data-provider="blomp">
             <div class="provider-icon">
               <svg viewBox="0 0 24 24" fill="currentColor">
-                <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/>
               </svg>
             </div>
             <h4>Blomp</h4>
-            <p>WebDAV connection</p>
+            <p>Swift / OpenStack</p>
           </button>
           
-          <button class="provider-card" data-provider="webdav-filen">
+          <button class="provider-card" data-provider="filen">
             <div class="provider-icon">
               <svg viewBox="0 0 24 24" fill="currentColor">
-                <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                <path d="M20 6h-8l-2-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2z"/>
               </svg>
             </div>
             <h4>Filen</h4>
-            <p>WebDAV connection</p>
+            <p>Email &amp; API Key</p>
           </button>
           
-          <button class="provider-card" data-provider="webdav-koofr">
+          <button class="provider-card" data-provider="koofr">
             <div class="provider-icon">
               <svg viewBox="0 0 24 24" fill="currentColor">
-                <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>
               </svg>
             </div>
             <h4>Koofr</h4>
-            <p>WebDAV connection</p>
+            <p>Email &amp; Password</p>
           </button>
         </div>
       </div>
@@ -285,6 +285,15 @@ class RemoteConfigWizard {
         card.classList.remove('selected');
       }
     });
+
+    // Update button states to enable Next button
+    this.updateButtons();
+    
+    // Explicitly ensure Next button is enabled after provider selection
+    const nextButton = this.modal.querySelector('#wizard-next-btn');
+    if (nextButton && this.currentStep === 'provider-selection') {
+      nextButton.disabled = false;
+    }
   }
 
   /**
@@ -353,66 +362,77 @@ class RemoteConfigWizard {
           </div>
         </div>
       `;
-    } else if (provider.startsWith('webdav-')) {
-      // WebDAV providers
-      const webdavProvider = provider.replace('webdav-', '');
-      const defaultUrls = {
-        'blomp': 'https://webdav.blomp.com',
-        'filen': 'https://webdav.filen.io',
-        'koofr': 'https://app.koofr.net/dav/Koofr'
-      };
-
+    } else if (provider === 'blomp') {
+      // Blomp — OpenStack Swift
       providerFields = `
         <div class="form-group">
-          <label for="webdav-url">WebDAV URL *</label>
-          <input 
-            type="url" 
-            id="webdav-url" 
-            class="form-input" 
-            placeholder="${defaultUrls[webdavProvider] || 'https://webdav.example.com'}"
-            value="${this.wizardData.config.url || defaultUrls[webdavProvider] || ''}"
-            required
-          >
-          <small class="form-help">The WebDAV server URL</small>
-        </div>
-
-        <div class="form-group">
-          <label for="webdav-username">Username *</label>
-          <input 
-            type="text" 
-            id="webdav-username" 
-            class="form-input" 
-            placeholder="your-username"
+          <label for="blomp-user">Email / Username *</label>
+          <input type="email" id="blomp-user" class="form-input"
+            placeholder="you@example.com"
             value="${this.wizardData.config.user || ''}"
-            required
-            autocomplete="username"
-          >
+            required autocomplete="username">
+          <small class="form-help">Your Blomp account email address</small>
         </div>
-
         <div class="form-group">
-          <label for="webdav-password">Password *</label>
-          <input 
-            type="password" 
-            id="webdav-password" 
-            class="form-input" 
+          <label for="blomp-key">Password *</label>
+          <input type="password" id="blomp-key" class="form-input"
             placeholder="••••••••"
-            value="${this.wizardData.config.pass || ''}"
-            required
-            autocomplete="current-password"
-          >
+            value="${this.wizardData.config.key || ''}"
+            required autocomplete="current-password">
         </div>
-
         <div class="form-group">
-          <label for="webdav-path">Remote Path / Bucket ${webdavProvider === 'blomp' ? '*' : '(Optional)'}</label>
-          <input 
-            type="text" 
-            id="webdav-path" 
-            class="form-input" 
-            placeholder="${webdavProvider === 'blomp' ? 'e.g., your-email@example.com' : 'e.g., /path/to/folder'}"
-            value="${this.wizardData.config.remotePath || ''}"
-            ${webdavProvider === 'blomp' ? 'required' : ''}
-          >
-          <small class="form-help">${webdavProvider === 'blomp' ? 'For Blomp, enter your email address (bucket name)' : 'Optional path or bucket name for the remote'}</small>
+          <label for="blomp-user-id">Blomp Username (login name) *</label>
+          <input type="text" id="blomp-user-id" class="form-input"
+            placeholder="e.g., johnhnly"
+            value="${this.wizardData.config.user_id || ''}"
+            required>
+          <small class="form-help">Your Blomp login username (not email). Found in your Blomp account settings.</small>
+        </div>
+      `;
+    } else if (provider === 'filen') {
+      // Filen — native rclone filen backend
+      providerFields = `
+        <div class="form-group">
+          <label for="filen-email">Email *</label>
+          <input type="email" id="filen-email" class="form-input"
+            placeholder="you@example.com"
+            value="${this.wizardData.config.email || ''}"
+            required autocomplete="username">
+        </div>
+        <div class="form-group">
+          <label for="filen-password">Password *</label>
+          <input type="password" id="filen-password" class="form-input"
+            placeholder="••••••••"
+            value="${this.wizardData.config.password || ''}"
+            required autocomplete="current-password">
+          <small class="form-help">Your Filen account password</small>
+        </div>
+        <div class="form-group">
+          <label for="filen-api-key">API Key *</label>
+          <input type="password" id="filen-api-key" class="form-input"
+            placeholder="Your Filen API key"
+            value="${this.wizardData.config.api_key || ''}"
+            required>
+          <small class="form-help">Found in Filen app → Settings → Security → API Keys</small>
+        </div>
+      `;
+    } else if (provider === 'koofr') {
+      // Koofr — native rclone koofr backend
+      providerFields = `
+        <div class="form-group">
+          <label for="koofr-user">Email *</label>
+          <input type="email" id="koofr-user" class="form-input"
+            placeholder="you@example.com"
+            value="${this.wizardData.config.user || ''}"
+            required autocomplete="username">
+        </div>
+        <div class="form-group">
+          <label for="koofr-password">App Password *</label>
+          <input type="password" id="koofr-password" class="form-input"
+            placeholder="••••••••"
+            value="${this.wizardData.config.password || ''}"
+            required autocomplete="current-password">
+          <small class="form-help">Generate an app password in Koofr → Settings → Password → App passwords</small>
         </div>
       `;
     }
@@ -441,34 +461,29 @@ class RemoteConfigWizard {
       });
     }
 
-    // WebDAV fields
-    const urlInput = document.getElementById('webdav-url');
-    if (urlInput) {
-      urlInput.addEventListener('input', (e) => {
-        this.wizardData.config.url = e.target.value.trim();
-      });
-    }
+    const provider = this.wizardData.provider;
 
-    const usernameInput = document.getElementById('webdav-username');
-    if (usernameInput) {
-      usernameInput.addEventListener('input', (e) => {
-        this.wizardData.config.user = e.target.value.trim();
-      });
-    }
+    // Blomp (Swift) fields
+    const blompUser = document.getElementById('blomp-user');
+    if (blompUser) blompUser.addEventListener('input', (e) => { this.wizardData.config.user = e.target.value.trim(); });
+    const blompKey = document.getElementById('blomp-key');
+    if (blompKey) blompKey.addEventListener('input', (e) => { this.wizardData.config.key = e.target.value; });
+    const blompUserId = document.getElementById('blomp-user-id');
+    if (blompUserId) blompUserId.addEventListener('input', (e) => { this.wizardData.config.user_id = e.target.value.trim(); });
 
-    const passwordInput = document.getElementById('webdav-password');
-    if (passwordInput) {
-      passwordInput.addEventListener('input', (e) => {
-        this.wizardData.config.pass = e.target.value;
-      });
-    }
+    // Filen fields
+    const filenEmail = document.getElementById('filen-email');
+    if (filenEmail) filenEmail.addEventListener('input', (e) => { this.wizardData.config.email = e.target.value.trim(); });
+    const filenPassword = document.getElementById('filen-password');
+    if (filenPassword) filenPassword.addEventListener('input', (e) => { this.wizardData.config.password = e.target.value; });
+    const filenApiKey = document.getElementById('filen-api-key');
+    if (filenApiKey) filenApiKey.addEventListener('input', (e) => { this.wizardData.config.api_key = e.target.value.trim(); });
 
-    const pathInput = document.getElementById('webdav-path');
-    if (pathInput) {
-      pathInput.addEventListener('input', (e) => {
-        this.wizardData.config.remotePath = e.target.value.trim();
-      });
-    }
+    // Koofr fields
+    const koofrUser = document.getElementById('koofr-user');
+    if (koofrUser) koofrUser.addEventListener('input', (e) => { this.wizardData.config.user = e.target.value.trim(); });
+    const koofrPassword = document.getElementById('koofr-password');
+    if (koofrPassword) koofrPassword.addEventListener('input', (e) => { this.wizardData.config.password = e.target.value; });
   }
 
   /**
@@ -499,17 +514,15 @@ class RemoteConfigWizard {
     const provider = this.wizardData.provider;
 
     try {
-      if (provider.startsWith('webdav-')) {
-        // Validate WebDAV connection
-        await this.validateWebDAVConnection();
-      } else {
-        // OAuth providers - initiate OAuth flow
+      if (provider === 'blomp' || provider === 'filen' || provider === 'koofr') {
+        // Native rclone providers — validate directly
+        await this.validateNativeConnection();
+      } else if (provider === 'google-drive' || provider === 'dropbox' || provider === 'onedrive') {
+        // OAuth providers
         await this.initiateOAuthFlow();
       }
     } catch (error) {
       console.error('Validation error:', error);
-      
-      // Show error and go back to configuration
       showError(`Validation failed: ${error.message}`);
       this.currentStep = 'configuration';
       this.renderStep();
@@ -519,38 +532,55 @@ class RemoteConfigWizard {
   }
 
   /**
-   * Validate WebDAV connection
+   * Validate and create a native rclone provider (Blomp/Filen/Koofr)
    */
-  async validateWebDAVConnection() {
+  async validateNativeConnection() {
     const remoteName = this.wizardData.remoteName;
-    const providerType = 'webdav';
-    const config = {
-      url: this.wizardData.config.url,
-      user: this.wizardData.config.user,
-      pass: this.wizardData.config.pass,
-      vendor: this.getWebDAVVendor(),
-      remotePath: this.wizardData.config.remotePath || ''
-    };
+    const provider = this.wizardData.provider;
+
+    let providerType, config;
+
+    if (provider === 'blomp') {
+      providerType = 'blomp'; // Internal StreamFun ID, backend maps to 'swift' for rclone
+      config = {
+        user: this.wizardData.config.user,
+        key: this.wizardData.config.key,
+        user_id: this.wizardData.config.user_id,
+        auth: 'https://authenticate.ain.net',
+        tenant: 'storage',
+        auth_version: '2',
+        endpoint_type: 'public',
+        leave_parts_on_error: 'true',
+        remotePath: this.wizardData.config.user, // Blomp bucket name is the email address
+      };
+    } else if (provider === 'filen') {
+      providerType = 'filen';
+      config = {
+        email: this.wizardData.config.email,
+        password: this.wizardData.config.password,
+        api_key: this.wizardData.config.api_key,
+      };
+    } else if (provider === 'koofr') {
+      providerType = 'koofr';
+      config = {
+        user: this.wizardData.config.user,
+        password: this.wizardData.config.password,
+        provider: 'koofr',
+      };
+    }
 
     try {
       const response = await fetch(`/api/rclone/remotes/${remoteName}/validate`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          providerType,
-          config
-        })
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ providerType, config }),
       });
 
       const data = await response.json();
 
       if (data.success && data.valid) {
-        // Validation successful, create the remote
         await this.createRemote(remoteName, providerType, config);
-        
-        // Move to complete step
         this.currentStep = 'complete';
         this.renderStep();
         this.updateProgress();
@@ -564,15 +594,41 @@ class RemoteConfigWizard {
   }
 
   /**
-   * Get WebDAV vendor setting
-   * @returns {string} Vendor name
+   * @deprecated — not used by Blomp/Filen/Koofr; kept for any true WebDAV remotes
    */
-  getWebDAVVendor() {
-    const provider = this.wizardData.provider;
-    if (provider === 'webdav-blomp') return 'other';
-    if (provider === 'webdav-filen') return 'other';
-    if (provider === 'webdav-koofr') return 'other';
-    return 'other';
+  async validateWebDAVConnection() {
+    const remoteName = this.wizardData.remoteName;
+    const providerType = 'webdav';
+    const config = {
+      url: this.wizardData.config.url,
+      user: this.wizardData.config.user,
+      pass: this.wizardData.config.pass,
+      vendor: 'other',
+      remotePath: this.wizardData.config.remotePath || ''
+    };
+
+    try {
+      const response = await fetch(`/api/rclone/remotes/${remoteName}/validate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ providerType, config })
+      });
+
+      const data = await response.json();
+
+      if (data.success && data.valid) {
+        await this.createRemote(remoteName, providerType, config);
+        this.currentStep = 'complete';
+        this.renderStep();
+        this.updateProgress();
+        this.updateButtons();
+      } else {
+        throw new Error(data.errors?.connection || data.error || 'Validation failed');
+      }
+    } catch (error) {
+      throw new Error(`Connection test failed: ${error.message}`);
+    }
   }
 
   /**
@@ -583,6 +639,16 @@ class RemoteConfigWizard {
     const provider = this.wizardData.provider;
 
     try {
+      // First, fetch existing remotes to ensure the name is unique
+      const existingRemotesRes = await fetch('/api/rclone/remotes');
+      const existingRemotesData = await existingRemotesRes.json();
+      if (existingRemotesData.success) {
+        const existingNames = existingRemotesData.data.map(r => r.name);
+        if (existingNames.includes(remoteName)) {
+           throw new Error(`A remote with the name '${remoteName}' already exists.`);
+        }
+      }
+
       // Get OAuth authorization URL from backend
       const response = await fetch(`/api/rclone/oauth/authorize/${provider}?remoteName=${encodeURIComponent(remoteName)}`);
       const data = await response.json();
@@ -688,9 +754,9 @@ class RemoteConfigWizard {
       'google-drive': 'Google Drive',
       'dropbox': 'Dropbox',
       'onedrive': 'OneDrive',
-      'webdav-blomp': 'Blomp (WebDAV)',
-      'webdav-filen': 'Filen (WebDAV)',
-      'webdav-koofr': 'Koofr (WebDAV)'
+      'blomp': 'Blomp',
+      'filen': 'Filen',
+      'koofr': 'Koofr',
     };
     return names[this.wizardData.provider] || this.wizardData.provider;
   }
@@ -845,26 +911,26 @@ class RemoteConfigWizard {
     // Validate provider-specific fields
     const provider = this.wizardData.provider;
     
-    if (provider.startsWith('webdav-')) {
-      // WebDAV validation
+    if (provider === 'blomp') {
+      if (!this.wizardData.config.user) errors.push('Email is required for Blomp');
+      if (!this.wizardData.config.key) errors.push('Password is required for Blomp');
+      if (!this.wizardData.config.user_id) errors.push('Blomp username (login name) is required');
+    } else if (provider === 'filen') {
+      if (!this.wizardData.config.email) errors.push('Email is required for Filen');
+      if (!this.wizardData.config.password) errors.push('Password is required for Filen');
+      if (!this.wizardData.config.api_key) errors.push('API Key is required for Filen');
+    } else if (provider === 'koofr') {
+      if (!this.wizardData.config.user) errors.push('Email is required for Koofr');
+      if (!this.wizardData.config.password) errors.push('App password is required for Koofr');
+    } else if (provider.startsWith('webdav-')) {
+      // Generic WebDAV validation (kept for any custom WebDAV remotes)
       if (!this.wizardData.config.url) {
         errors.push('WebDAV URL is required');
       } else if (!/^https?:\/\/.+/.test(this.wizardData.config.url)) {
         errors.push('WebDAV URL must start with http:// or https://');
       }
-
-      if (!this.wizardData.config.user) {
-        errors.push('Username is required');
-      }
-
-      if (!this.wizardData.config.pass) {
-        errors.push('Password is required');
-      }
-
-      // Validate remote path for Blomp
-      if (provider === 'webdav-blomp' && !this.wizardData.config.remotePath) {
-        errors.push('Remote path (email/bucket) is required for Blomp');
-      }
+      if (!this.wizardData.config.user) errors.push('Username is required');
+      if (!this.wizardData.config.pass) errors.push('Password is required');
     }
 
     // Show errors if any

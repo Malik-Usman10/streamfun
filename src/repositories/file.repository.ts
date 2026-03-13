@@ -14,6 +14,9 @@ export interface CreateFileData {
   isChunked?: boolean;
   encryptionKey?: string;
   encryptionIv?: string;
+  category?: string;
+  collectionName?: string;
+  thumbnailData?: string;
   metadata?: Record<string, any>;
   uploadedAt: Date;
 }
@@ -23,6 +26,7 @@ export interface FileListOptions {
   limit?: number;
   providerType?: ProviderType;
   mimeType?: string;
+  category?: string;
 }
 
 export class FileRepository {
@@ -30,46 +34,52 @@ export class FileRepository {
     const query = data.id
       ? `INSERT INTO files 
          (id, filename, mime_type, size, provider_type, account_id, provider_file_id, 
-          is_chunked, encryption_key, encryption_iv, metadata, uploaded_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+          is_chunked, encryption_key, encryption_iv, category, collection_name, thumbnail_data, metadata, uploaded_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
          RETURNING *`
       : `INSERT INTO files 
          (filename, mime_type, size, provider_type, account_id, provider_file_id, 
-          is_chunked, encryption_key, encryption_iv, metadata, uploaded_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          is_chunked, encryption_key, encryption_iv, category, collection_name, thumbnail_data, metadata, uploaded_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
          RETURNING *`;
-    
+
     const params = data.id
       ? [
-          data.id,
-          data.filename,
-          data.mimeType,
-          data.size,
-          data.providerType,
-          data.accountId,
-          data.providerFileId,
-          data.isChunked || false,
-          data.encryptionKey,
-          data.encryptionIv,
-          data.metadata ? JSON.stringify(data.metadata) : null,
-          data.uploadedAt,
-        ]
+        data.id,
+        data.filename,
+        data.mimeType,
+        data.size,
+        data.providerType,
+        data.accountId,
+        data.providerFileId,
+        data.isChunked || false,
+        data.encryptionKey,
+        data.encryptionIv,
+        data.category,
+        data.collectionName,
+        data.thumbnailData,
+        data.metadata ? JSON.stringify(data.metadata) : null,
+        data.uploadedAt,
+      ]
       : [
-          data.filename,
-          data.mimeType,
-          data.size,
-          data.providerType,
-          data.accountId,
-          data.providerFileId,
-          data.isChunked || false,
-          data.encryptionKey,
-          data.encryptionIv,
-          data.metadata ? JSON.stringify(data.metadata) : null,
-          data.uploadedAt,
-        ];
-    
+        data.filename,
+        data.mimeType,
+        data.size,
+        data.providerType,
+        data.accountId,
+        data.providerFileId,
+        data.isChunked || false,
+        data.encryptionKey,
+        data.encryptionIv,
+        data.category,
+        data.collectionName,
+        data.thumbnailData,
+        data.metadata ? JSON.stringify(data.metadata) : null,
+        data.uploadedAt,
+      ];
+
     const result = await pool.query<FileRecord>(query, params);
-    
+
     return this.mapRow(result.rows[0]);
   }
 
@@ -78,7 +88,7 @@ export class FileRepository {
       'SELECT * FROM files WHERE id = $1',
       [id]
     );
-    
+
     return result.rows.length > 0 ? this.mapRow(result.rows[0]) : null;
   }
 
@@ -87,7 +97,7 @@ export class FileRepository {
       'SELECT * FROM files WHERE account_id = $1 ORDER BY uploaded_at DESC',
       [accountId]
     );
-    
+
     return result.rows.map(this.mapRow);
   }
 
@@ -95,86 +105,146 @@ export class FileRepository {
     const page = options.page || 1;
     const limit = options.limit || 50;
     const offset = (page - 1) * limit;
-    
+
     let query = 'SELECT * FROM files WHERE 1=1';
     const params: any[] = [];
     let paramIndex = 1;
-    
+
     if (options.providerType) {
       query += ` AND provider_type = $${paramIndex}`;
       params.push(options.providerType);
       paramIndex++;
     }
-    
+
     if (options.mimeType) {
       query += ` AND mime_type LIKE $${paramIndex}`;
       params.push(`${options.mimeType}%`);
       paramIndex++;
     }
-    
+
+    if (options.category) {
+      if (options.category === 'Uncategorized') {
+        query += ` AND collection_name IS NULL`;
+      } else {
+        query += ` AND collection_name = $${paramIndex}`;
+        params.push(options.category);
+        paramIndex++;
+      }
+    }
+
     query += ` ORDER BY uploaded_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
     params.push(limit, offset);
-    
+
     const result = await pool.query<FileRecord>(query, params);
-    
+
     // Get total count
     let countQuery = 'SELECT COUNT(*) as count FROM files WHERE 1=1';
     const countParams: any[] = [];
     let countParamIndex = 1;
-    
+
     if (options.providerType) {
       countQuery += ` AND provider_type = $${countParamIndex}`;
       countParams.push(options.providerType);
       countParamIndex++;
     }
-    
+
     if (options.mimeType) {
       countQuery += ` AND mime_type LIKE $${countParamIndex}`;
       countParams.push(`${options.mimeType}%`);
+      countParamIndex++;
     }
-    
+
+    if (options.category) {
+      if (options.category === 'Uncategorized') {
+        countQuery += ` AND collection_name IS NULL`;
+      } else {
+        countQuery += ` AND collection_name = $${countParamIndex}`;
+        countParams.push(options.category);
+        countParamIndex++;
+      }
+    }
+
     const countResult = await pool.query<{ count: string }>(countQuery, countParams);
     const total = parseInt(countResult.rows[0].count, 10);
-    
+
     return {
       files: result.rows.map(this.mapRow),
       total,
     };
   }
 
+  async getCategories(fileType: 'image' | 'video'): Promise<Array<{ collectionName: string; count: number; thumbnail?: string }>> {
+    const mimeTypePrefix = fileType === 'image' ? 'image/' : 'video/';
+
+    const query = `
+      SELECT 
+        COALESCE(collection_name, 'Uncategorized') as collection_name,
+        COUNT(*) as count,
+        (
+          SELECT thumbnail_data 
+          FROM files f2 
+          WHERE (f2.collection_name IS NOT DISTINCT FROM files.collection_name)
+            AND f2.mime_type LIKE $1 
+            AND f2.thumbnail_data IS NOT NULL 
+          ORDER BY RANDOM()
+          LIMIT 1
+        ) as thumbnail
+      FROM files 
+      WHERE mime_type LIKE $1
+      GROUP BY files.collection_name 
+      ORDER BY count DESC, collection_name ASC
+    `;
+
+    const result = await pool.query(query, [mimeTypePrefix + '%']);
+
+    return result.rows.map(row => ({
+      collectionName: row.collection_name,
+      count: parseInt(row.count, 10),
+      thumbnail: row.thumbnail,
+    }));
+  }
+
   async update(id: string, data: Partial<CreateFileData>): Promise<FileRecord> {
-      const fields: string[] = [];
-      const values: any[] = [];
-      let paramIndex = 1;
+    const fields: string[] = [];
+    const values: any[] = [];
+    let paramIndex = 1;
 
-      if (data.filename !== undefined) {
-        fields.push(`filename = $${paramIndex++}`);
-        values.push(data.filename);
-      }
-
-      if (data.metadata !== undefined) {
-        fields.push(`metadata = $${paramIndex++}`);
-        values.push(JSON.stringify(data.metadata));
-      }
-
-      if ((data as any).thumbnailData !== undefined) {
-        fields.push(`thumbnail_data = $${paramIndex++}`);
-        values.push((data as any).thumbnailData);
-      }
-
-      fields.push('updated_at = NOW()');
-      values.push(id);
-
-      const result = await pool.query<FileRecord>(
-        `UPDATE files SET ${fields.join(', ')} WHERE id = $${paramIndex} RETURNING *`,
-        values
-      );
-
-      return this.mapRow(result.rows[0]);
+    if (data.filename !== undefined) {
+      fields.push(`filename = $${paramIndex++}`);
+      values.push(data.filename);
     }
+
+    if (data.metadata !== undefined) {
+      fields.push(`metadata = $${paramIndex++}`);
+      values.push(JSON.stringify(data.metadata));
+    }
+
+    if ((data as any).thumbnailData !== undefined) {
+      fields.push(`thumbnail_data = $${paramIndex++}`);
+      values.push((data as any).thumbnailData);
+    }
+
+    fields.push('updated_at = NOW()');
+    values.push(id);
+
+    const result = await pool.query<FileRecord>(
+      `UPDATE files SET ${fields.join(', ')} WHERE id = $${paramIndex} RETURNING *`,
+      values
+    );
+
+    return this.mapRow(result.rows[0]);
+  }
 
   async delete(id: string): Promise<void> {
     await pool.query('DELETE FROM files WHERE id = $1', [id]);
+  }
+
+  async existsByNameAndSize(filename: string, size: number): Promise<boolean> {
+    const result = await pool.query(
+      'SELECT id FROM files WHERE filename = $1 AND size = $2 LIMIT 1',
+      [filename, size]
+    );
+    return result.rows.length > 0;
   }
 
   private mapRow(row: any): FileRecord {

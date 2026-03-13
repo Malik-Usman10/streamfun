@@ -92,11 +92,35 @@ export function createRcloneRoutes(accountService: AccountService): Router {
       }
     }
 
-    // Create remote config object
+    // Map StreamFun provider type to rclone driver type
+    const rcloneTypeMap: Record<string, string> = {
+      'blomp': 'swift',
+      'filen': 'filen',
+      'koofr': 'koofr'
+    };
+    const finalProviderType = rcloneTypeMap[providerType] || providerType;
+
+    // Extract remotePath from config (used for account credentials, not rclone config)
+    const { remotePath, ...rcloneConfig } = config;
+
+    // Obscure sensitive fields before creating remote config
+    const processedConfig = { ...rcloneConfig };
+    
+    // Obscure passwords for different provider types
+    // NOTE: Blomp (Swift) does NOT require password obscuring - it uses plain text
+    if (providerType === 'koofr' && rcloneConfig.password) {
+      processedConfig.password = await rcloneConfigService.encryptField(rcloneConfig.password);
+    } else if (providerType === 'filen' && rcloneConfig.password) {
+      processedConfig.password = await rcloneConfigService.encryptField(rcloneConfig.password);
+    } else if (providerType === 'webdav' && rcloneConfig.pass) {
+      processedConfig.pass = await rcloneConfigService.encryptField(rcloneConfig.pass);
+    }
+
+    // Create remote config object (without remotePath, with obscured passwords)
     const remoteConfig = {
       name: remoteName,
-      type: providerType,
-      config: config
+      type: finalProviderType,
+      config: processedConfig
     };
 
     // Create remote with account integration
@@ -104,7 +128,8 @@ export function createRcloneRoutes(accountService: AccountService): Router {
       remoteName,
       providerType: providerType as ProviderType,
       remoteConfig,
-      accountIdentifier: config.accountIdentifier || remoteName
+      accountIdentifier: config.accountIdentifier || remoteName,
+      remotePath // Pass remotePath separately for account credentials
     });
 
     logger.info({ remoteName, accountId: result.accountId }, 'Remote created successfully via API');
@@ -133,38 +158,38 @@ export function createRcloneRoutes(accountService: AccountService): Router {
 
 /**
  * GET /api/rclone/remotes
- * List all rclone remotes with status and quota info
+ * List all rclone remotes with their account info (quick fetch)
  */
 router.get('/remotes', async (req: Request, res: Response) => {
   try {
-    const remotesWithStatus = await rcloneIntegrationService.listRemotesWithStatus();
+    const remotesWithAccounts = await rcloneIntegrationService.listRemotesWithAccounts();
 
-    // Fetch quota info for each remote
-    const remotesWithQuota = await Promise.all(
-      remotesWithStatus.map(async (item) => {
-        // Extract remotePath from rclone config if available
-        // For Swift/Blomp, use the user field (email) as fallback
-        let remotePath = item.remote.config.remotePath;
-        if (!remotePath && item.remote.type === 'swift' && item.remote.config.user) {
-          remotePath = item.remote.config.user;
-        }
-        
-        const quotaInfo = await rcloneIntegrationService.getQuotaInfo(item.remote.name, remotePath);
+    const formattedRemotes = remotesWithAccounts.map((item) => {
+        // Find corresponding database account info
+        const account = item.account;
         
         return {
           name: item.remote.name,
           type: item.remote.type,
           config: maskRemoteConfig(item.remote.config),
-          accountId: item.account?.id,
-          connectionStatus: item.connectionStatus,
-          quota: quotaInfo
+          accountId: account?.id,
+          // Include cached quota and status if available
+          connectionStatus: account ? {
+            success: account.status === 'active',
+            message: account.healthError || (account.status === 'active' ? 'Online' : 'Offline'),
+          } : undefined,
+          quota: account?.quotaTotal !== undefined && account?.quotaTotal !== null ? {
+            total: Number(account.quotaTotal),
+            used: Number(account.quotaUsed || 0),
+            available: true, // If we have cached quota, it's available
+            usagePercent: account.quotaUsagePercent ? Number(account.quotaUsagePercent) : 0
+          } : undefined
         };
-      })
-    );
+      });
 
     res.json({
       success: true,
-      data: remotesWithQuota
+      data: formattedRemotes
     });
   } catch (error: any) {
     logger.error({ error: error.message, stack: error.stack }, 'Failed to list remotes via API');
@@ -221,6 +246,100 @@ router.get('/remotes/:remoteName', async (req: Request, res: Response) => {
     res.status(500).json({
       success: false,
       error: 'Failed to get remote information',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/rclone/remotes/:remoteName/status
+ * Get connection status and quota info for a specific remote
+ * Uses database cache if available and not stale
+ */
+router.get('/remotes/:remoteName/status', async (req: Request, res: Response) => {
+  try {
+    const remoteName = String(req.params.remoteName);
+    const forceRefresh = req.query.force === 'true';
+
+    // Get remote and account info
+    const remoteInfo = await rcloneIntegrationService.getRemoteInfo(remoteName);
+
+    if (!remoteInfo.remote) {
+      return res.status(404).json({
+        success: false,
+        error: `Remote '${remoteName}' not found`
+      });
+    }
+
+    const account = remoteInfo.account;
+    const cacheStaleTime = 30 * 60 * 1000; // 30 minutes
+    const isCacheValid = account && 
+                        account.quotaLastCheckedAt && 
+                        (new Date().getTime() - new Date(account.quotaLastCheckedAt).getTime() < cacheStaleTime);
+
+    let quotaInfo;
+    let connectionStatus = remoteInfo.connectionStatus;
+
+    if (!forceRefresh && isCacheValid && account.quotaTotal !== null) {
+      logger.debug({ remoteName }, 'Returning cached quota and status from database');
+      quotaInfo = {
+        total: account.quotaTotal !== null ? Number(account.quotaTotal) : undefined,
+        used: account.quotaUsed !== null ? Number(account.quotaUsed) : 0,
+        available: true,
+        usagePercent: account.quotaUsagePercent ? Number(account.quotaUsagePercent) : 0
+      };
+      connectionStatus = {
+        success: account.status === 'active',
+        message: account.healthError || (account.status === 'active' ? 'Online' : 'Offline')
+      };
+    } else {
+      logger.info({ remoteName, forceRefresh }, 'Fetching fresh quota and status from rclone');
+      
+      // Get fresh quota info
+      let remotePath = remoteInfo.remote?.config.remotePath;
+      if (!remotePath && remoteInfo.remote?.type === 'swift' && remoteInfo.remote.config.user) {
+        remotePath = remoteInfo.remote.config.user;
+      }
+      
+      quotaInfo = await rcloneIntegrationService.getQuotaInfo(remoteName, remotePath);
+      
+      // Update account in database with fresh info if account exists
+      if (account) {
+        try {
+          await accountService.updateAccountQuota(account.id, {
+            total: quotaInfo.total || 0,
+            used: quotaInfo.used || 0,
+            available: quotaInfo.free || 0,
+            usagePercent: quotaInfo.total ? (Number(quotaInfo.used || 0) / Number(quotaInfo.total)) * 100 : 0,
+            lastCheckedAt: new Date()
+          });
+          
+          await accountService.updateAccountHealth(account.id, {
+            status: connectionStatus.success ? 'active' : 'error',
+            lastCheckedAt: new Date(),
+            error: connectionStatus.error
+          });
+        } catch (dbError) {
+          logger.warn({ dbError, accountId: account.id }, 'Failed to update account cache in database');
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        name: remoteInfo.remote.name,
+        connectionStatus,
+        quota: quotaInfo,
+        lastChecked: account?.quotaLastCheckedAt || new Date().toISOString()
+      }
+    });
+  } catch (error: any) {
+    logger.error({ error, remoteName: String(req.params.remoteName) }, 'Failed to get remote status via API');
+    
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get remote status',
       details: error.message
     });
   }
@@ -392,20 +511,51 @@ router.post('/remotes/:remoteName/validate', async (req: Request, res: Response)
       });
     }
 
-    // Create a temporary remote config for testing
+    // Map StreamFun provider type to rclone driver type for validation
+    const rcloneTypeMap: Record<string, string> = {
+      'blomp': 'swift',
+      'filen': 'filen',
+      'koofr': 'koofr'
+    };
+    const finalProviderType = rcloneTypeMap[providerType] || providerType;
+
+    // Extract remotePath from config (used for testing, not for rclone config)
+    const { remotePath, ...configWithoutPath } = config;
+
+    // Log config for debugging (without sensitive data)
+    logger.debug({ 
+      remoteName, 
+      providerType, 
+      configKeys: Object.keys(configWithoutPath),
+      hasRemotePath: !!remotePath 
+    }, 'Validating remote configuration');
+
+    // Obscure sensitive fields before creating remote config
+    const processedConfig = { ...configWithoutPath };
+    
+    // Obscure passwords for different provider types
+    // NOTE: Blomp (Swift) does NOT require password obscuring - it uses plain text
+    if (providerType === 'koofr' && configWithoutPath.password) {
+      processedConfig.password = await rcloneConfigService.encryptField(configWithoutPath.password);
+    } else if (providerType === 'filen' && configWithoutPath.password) {
+      processedConfig.password = await rcloneConfigService.encryptField(configWithoutPath.password);
+    } else if (providerType === 'webdav' && configWithoutPath.pass) {
+      processedConfig.pass = await rcloneConfigService.encryptField(configWithoutPath.pass);
+    }
+
+    // Create a temporary remote config for testing (without remotePath)
     const tempRemoteName = `temp_validate_${Date.now()}`;
     const tempRemoteConfig = {
       name: tempRemoteName,
-      type: providerType,
-      config: config
+      type: finalProviderType,
+      config: processedConfig
     };
 
     try {
       // Add temporary remote
       await rcloneConfigService.addRemote(tempRemoteConfig);
 
-      // Test connection with remotePath if provided
-      const remotePath = config.remotePath;
+      // Test connection with remotePath if provided (for Blomp bucket name)
       const connectionResult = await rcloneIntegrationService.testConnection(tempRemoteName, 15000, remotePath);
 
       // Clean up temporary remote
@@ -420,13 +570,29 @@ router.post('/remotes/:remoteName/validate', async (req: Request, res: Response)
         });
       } else {
         logger.warn({ remoteName, error: connectionResult.error }, 'Validation failed - connection test failed');
+        
+        // Provide more helpful error messages for common issues
+        let errorMessage = connectionResult.message;
+        let suggestions: string[] = [];
+        
+        if (providerType === 'blomp' && connectionResult.error?.includes('Authorization Failed')) {
+          errorMessage = 'Blomp authorization failed. Please check your credentials.';
+          suggestions = [
+            'Verify your email address is correct',
+            'Verify your password is correct',
+            'Verify your Blomp username (login name) is correct - this is NOT your email',
+            'Make sure your Blomp account is active and not suspended'
+          ];
+        }
+        
         res.status(400).json({
           success: false,
           valid: false,
           errors: {
-            connection: connectionResult.message
+            connection: errorMessage
           },
-          details: connectionResult.error
+          details: connectionResult.error,
+          suggestions
         });
       }
     } catch (testError: any) {

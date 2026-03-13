@@ -168,7 +168,11 @@ export function validateProviderType(providerType: string): ValidationResult {
     'google-drive',
     'dropbox',
     'onedrive',
-    'webdav'
+    'webdav',
+    'blomp',
+    'filen',
+    'koofr',
+    'swift'
   ];
 
   const errors: string[] = [];

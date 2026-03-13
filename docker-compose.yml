@@ -33,6 +33,43 @@ services:
       timeout: 5s
       retries: 5
 
+  app:
+    build: .
+    container_name: streamfun-app
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./uploads:/uploads                              # Bind-mount: drop media here
+      - rclone_config:/root/.config/rclone              # rclone config persistence
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_NAME: streamfun
+      DATABASE_USER: postgres
+      DATABASE_PASSWORD: postgres
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      UPLOAD_WATCH_DIR: /uploads
+      NODE_ENV: production
+      PORT: 3000
+      # Copy remaining secrets from your .env manually or use Docker secrets
+      MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY}
+      FILE_ENCRYPTION_MASTER_KEY: ${FILE_ENCRYPTION_MASTER_KEY}
+      JWT_SECRET: ${JWT_SECRET}
+      API_KEY_SALT: ${API_KEY_SALT}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
 volumes:
   postgres_data:
   redis_data:
+  rclone_config:

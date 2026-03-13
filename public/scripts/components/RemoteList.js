@@ -11,6 +11,9 @@ import DeleteConfirmationDialog from './DeleteConfirmationDialog.js';
 import RemoteConfigWizard from './RemoteConfigWizard.js';
 import RemoteEditModal from './RemoteEditModal.js';
 
+// Cache to store remote statuses and quotas across component unmounts (e.g., tab switching)
+const globalRemotesStatusCache = {};
+
 class RemoteList {
   constructor(container) {
     this.container = container;
@@ -50,7 +53,61 @@ class RemoteList {
       const data = await response.json();
       
       if (data.success) {
-        this.remotes = data.data || [];
+        const newRemotes = data.data || [];
+        let needsStatusFetch = false;
+        
+        // Initialize remotes with loading state for status and quota
+        // but preserve any existing loaded status from local or global cache
+        this.remotes = newRemotes.map(newRemote => {
+          // Check if status/quota was already provided in the listing (from backend DB cache)
+          const hasProvidedStatus = newRemote.connectionStatus && !newRemote.connectionStatus.loading;
+          const hasProvidedQuota = newRemote.quota && !newRemote.quota.loading;
+
+          const existing = this.remotes.find(r => r.name === newRemote.name) || globalRemotesStatusCache[newRemote.name];
+          
+          if (hasProvidedStatus || hasProvidedQuota) {
+             const status = newRemote.connectionStatus || (existing ? existing.connectionStatus : { loading: true });
+             const quota = newRemote.quota || (existing ? existing.quota : { loading: true });
+             
+             globalRemotesStatusCache[newRemote.name] = {
+               connectionStatus: status,
+               quota: quota
+             };
+             
+             if (status.loading || quota.loading) {
+               needsStatusFetch = true;
+             }
+
+             return {
+               ...newRemote,
+               connectionStatus: status,
+               quota: quota
+             };
+          } else if (existing && existing.connectionStatus && !existing.connectionStatus.loading) {
+            // Ensure global cache stays updated
+            globalRemotesStatusCache[newRemote.name] = {
+              connectionStatus: existing.connectionStatus,
+              quota: existing.quota
+            };
+            return {
+              ...newRemote,
+              connectionStatus: existing.connectionStatus,
+              quota: existing.quota
+            };
+          } else {
+            needsStatusFetch = true;
+            return {
+              ...newRemote,
+              connectionStatus: { loading: true },
+              quota: { loading: true }
+            };
+          }
+        });
+        
+        // Start fetching statuses asynchronously
+        if (needsStatusFetch) {
+          this.fetchRemoteStatuses();
+        }
       } else {
         throw new Error(data.error || 'Failed to fetch remotes');
       }
@@ -61,6 +118,76 @@ class RemoteList {
     } finally {
       this.isLoading = false;
       this.render();
+    }
+  }
+
+  /**
+   * Fetch statuses and quotas for all remotes asynchronously
+   */
+  async fetchRemoteStatuses() {
+    for (const remote of this.remotes) {
+      if (remote.connectionStatus?.loading) {
+        this.fetchSingleRemoteStatus(remote.name);
+      }
+    }
+  }
+
+  /**
+   * Fetch status and quota for a single remote
+   * @param {string} remoteName - Remote name
+   */
+  async fetchSingleRemoteStatus(remoteName, force = false) {
+    try {
+      const url = `/api/rclone/remotes/${remoteName}/status${force ? '?force=true' : ''}`;
+      const response = await fetch(url);
+      const data = await response.json();
+      
+      if (data.success && data.data) {
+        // Update the specific remote in state
+        const index = this.remotes.findIndex(r => r.name === remoteName);
+        if (index !== -1) {
+          this.remotes[index] = {
+            ...this.remotes[index],
+            connectionStatus: data.data.connectionStatus,
+            quota: data.data.quota
+          };
+          
+          // Save to global cache
+          globalRemotesStatusCache[remoteName] = {
+             connectionStatus: data.data.connectionStatus,
+             quota: data.data.quota
+          };
+          
+          // Re-render only this specific card if it exists in DOM
+          const cardElement = this.container.querySelector(`.remote-card[data-remote-name="${remoteName}"]`);
+          if (cardElement) {
+             const newCardHtml = this.renderRemoteCard(this.remotes[index]);
+             // Create a temporary container to extract the new card's inner HTML and classes
+             const temp = document.createElement('div');
+             temp.innerHTML = newCardHtml;
+             const newCard = temp.firstElementChild;
+             cardElement.replaceWith(newCard);
+             
+             // Re-attach listeners to the new card's buttons
+             this.attachCardEventListeners(newCard);
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`Failed to fetch status for ${remoteName}:`, error);
+      // Update state to show error
+      const index = this.remotes.findIndex(r => r.name === remoteName);
+      if (index !== -1) {
+        this.remotes[index].connectionStatus = { success: false, message: 'Status check failed' };
+        this.remotes[index].quota = { available: false };
+        
+        globalRemotesStatusCache[remoteName] = {
+           connectionStatus: this.remotes[index].connectionStatus,
+           quota: this.remotes[index].quota
+        };
+        
+        this.render(); // full render as fallback
+      }
     }
   }
 
@@ -120,19 +247,36 @@ class RemoteList {
    * @returns {string} HTML string
    */
   renderRemoteCard(remote) {
-    const statusClass = remote.connectionStatus?.success ? 'status-online' : 'status-offline';
-    const statusText = remote.connectionStatus?.success ? 'Online' : 'Offline';
-    const statusIcon = remote.connectionStatus?.success 
-      ? '<circle cx="12" cy="12" r="10"></circle><polyline points="9 12 11 14 15 10"></polyline>'
-      : '<circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line>';
+    const isLoadingStatus = remote.connectionStatus?.loading;
+    
+    let statusClass = 'status-loading';
+    let statusText = 'Checking...';
+    let statusIcon = '<circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline>';
+    
+    if (!isLoadingStatus) {
+      statusClass = remote.connectionStatus?.success ? 'status-online' : 'status-offline';
+      statusText = remote.connectionStatus?.success ? 'Online' : 'Offline';
+      statusIcon = remote.connectionStatus?.success 
+        ? '<circle cx="12" cy="12" r="10"></circle><polyline points="9 12 11 14 15 10"></polyline>'
+        : '<circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line>';
+    }
 
-    const quotaText = remote.quota?.available 
-      ? `${formatBytes(remote.quota.used || 0)} / ${formatBytes(remote.quota.total || 0)}`
-      : 'Quota unavailable';
-
-    const quotaPercent = remote.quota?.available && remote.quota.total
-      ? Math.round(((remote.quota.used || 0) / remote.quota.total) * 100)
-      : 0;
+    const isLoadingQuota = remote.quota?.loading;
+    let quotaText = 'Loading quota...';
+    let quotaPercent = 0;
+    
+    if (!isLoadingQuota) {
+      const total = Number(remote.quota?.total || 0);
+      const used = Number(remote.quota?.used || 0);
+      
+      quotaText = remote.quota?.available 
+        ? `${formatBytes(used)} / ${formatBytes(total)}`
+        : 'Quota unavailable';
+      
+      quotaPercent = remote.quota?.available && total > 0
+        ? Math.round((used / total) * 100)
+        : 0;
+    }
 
     return `
       <div class="remote-card" data-remote-name="${remote.name}">
@@ -156,7 +300,9 @@ class RemoteList {
         </div>
         
         <div class="remote-body">
-          ${remote.quota?.available ? `
+          ${isLoadingQuota ? `
+            <p class="quota-text">${quotaText}</p>
+          ` : remote.quota?.available ? `
             <div class="remote-quota">
               <div class="quota-bar">
                 <div class="quota-fill" style="width: ${quotaPercent}%"></div>
@@ -167,7 +313,7 @@ class RemoteList {
             <p class="quota-text">${quotaText}</p>
           `}
           
-          ${!remote.connectionStatus?.success && remote.connectionStatus?.error ? `
+          ${!isLoadingStatus && !remote.connectionStatus?.success && remote.connectionStatus?.error ? `
             <p class="remote-error">${remote.connectionStatus.message}</p>
           ` : ''}
         </div>
@@ -236,13 +382,27 @@ class RemoteList {
       });
     }
 
-    // Action buttons
-    const actionButtons = this.container.querySelectorAll('[data-action]');
+    // Attach listeners to all currently rendered cards
+    this.container.querySelectorAll('.remote-card').forEach(card => {
+       this.attachCardEventListeners(card);
+    });
+  }
+
+  /**
+   * Attach event listeners to a specific card's buttons
+   * @param {Element} card - Remote card element
+   */
+  attachCardEventListeners(card) {
+    const actionButtons = card.querySelectorAll('[data-action]');
     actionButtons.forEach(btn => {
-      btn.addEventListener('click', (e) => {
+      // Remove old listener if re-attaching
+      const newBtn = btn.cloneNode(true);
+      btn.parentNode.replaceChild(newBtn, btn);
+      
+      newBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        const action = btn.dataset.action;
-        const remoteName = btn.dataset.remoteName;
+        const action = newBtn.dataset.action;
+        const remoteName = newBtn.dataset.remoteName;
         this.handleAction(action, remoteName);
       });
     });
@@ -321,8 +481,25 @@ class RemoteList {
         showError(`Connection to ${remoteName} failed: ${data.data.message || data.error}`);
       }
 
-      // Refresh remotes list
-      await this.fetchRemotes();
+      // Re-fetch only this specific remote's status so the dashboard updates smoothly
+      // First, set the specific remote to loading
+      const index = this.remotes.findIndex(r => r.name === remoteName);
+      if (index !== -1) {
+        this.remotes[index].connectionStatus = { loading: true };
+        this.remotes[index].quota = { loading: true };
+        
+        const cardElement = this.container.querySelector(`.remote-card[data-remote-name="${remoteName}"]`);
+        if (cardElement) {
+           const newCardHtml = this.renderRemoteCard(this.remotes[index]);
+           const temp = document.createElement('div');
+           temp.innerHTML = newCardHtml;
+           const newCard = temp.firstElementChild;
+           cardElement.replaceWith(newCard);
+           this.attachCardEventListeners(newCard);
+        }
+      }
+
+      await this.fetchSingleRemoteStatus(remoteName, true); // Force refresh on test
 
     } catch (error) {
       console.error('Test connection error:', error);
@@ -348,6 +525,12 @@ class RemoteList {
     if (this.editModal) {
       this.editModal.show(remoteName, {
         onSave: async () => {
+          // Force a status recheck for the edited remote
+          const index = this.remotes.findIndex(r => r.name === remoteName);
+          if (index !== -1) {
+            this.remotes[index].connectionStatus = { loading: true };
+            this.remotes[index].quota = { loading: true };
+          }
           // Refresh remotes list after save
           await this.fetchRemotes();
         },
@@ -394,6 +577,11 @@ class RemoteList {
       if (data.success) {
         showSuccess(`Remote "${remoteName}" deleted successfully`);
         
+        // Remove from global cache so it doesn't glitch if added again
+        if (typeof globalRemotesStatusCache !== 'undefined') {
+          delete globalRemotesStatusCache[remoteName];
+        }
+        
         // Refresh remotes list
         await this.fetchRemotes();
       } else {
@@ -410,6 +598,11 @@ class RemoteList {
    * Refresh remotes list
    */
   async refresh() {
+    // Clear global cache for forced refresh
+    for (const remote of this.remotes) {
+       delete globalRemotesStatusCache[remote.name];
+    }
+    this.remotes = [];
     await this.fetchRemotes();
   }
 

@@ -27,6 +27,7 @@ export interface AccountSelection {
 
 export class AccountSelector {
   private quotaRefreshInterval = 5 * 60 * 1000; // 5 minutes
+  private refreshInProgress = new Map<string, Promise<QuotaInfo>>(); // Prevent concurrent refreshes
   
   constructor(
     private accountRepository: AccountRepository,
@@ -141,31 +142,47 @@ export class AccountSelector {
    * Get available quota for an account (with caching)
    */
   async getAvailableQuota(accountId: string): Promise<QuotaInfo> {
-    // Check cache first
+    // Check accounts table for cached quota
     const cached = await pool.query(
-      `SELECT * FROM account_quotas WHERE account_id = $1`,
+      `SELECT id, quota_total, quota_used, quota_available, quota_last_checked_at 
+       FROM accounts WHERE id = $1`,
       [accountId]
     );
     
     if (cached.rows.length > 0) {
       const row = cached.rows[0];
-      const lastRefreshed = new Date(row.last_refreshed);
+      const lastRefreshed = row.quota_last_checked_at ? new Date(row.quota_last_checked_at) : null;
       const now = new Date();
       
-      // Use cache if less than 5 minutes old
-      if (now.getTime() - lastRefreshed.getTime() < this.quotaRefreshInterval) {
+      // Use cache if less than 15 minutes old (aligned with dashboard cache)
+      if (lastRefreshed && (now.getTime() - lastRefreshed.getTime() < 15 * 60 * 1000)) {
         return {
-          accountId: row.account_id,
-          totalSpace: parseInt(row.total_space),
-          usedSpace: parseInt(row.used_space),
-          availableSpace: parseInt(row.available_space),
+          accountId: row.id,
+          totalSpace: parseInt(row.quota_total || '0'),
+          usedSpace: parseInt(row.quota_used || '0'),
+          availableSpace: parseInt(row.quota_available || '0'),
           lastUpdated: lastRefreshed,
         };
       }
     }
     
+    // Check if refresh is already in progress for this account
+    if (this.refreshInProgress.has(accountId)) {
+      logger.info({ accountId }, 'Quota refresh already in progress, waiting...');
+      return await this.refreshInProgress.get(accountId)!;
+    }
+    
     // Refresh quota from provider
-    return await this.refreshQuota(accountId);
+    const refreshPromise = this.refreshQuota(accountId);
+    this.refreshInProgress.set(accountId, refreshPromise);
+    
+    try {
+      const result = await refreshPromise;
+      return result;
+    } finally {
+      // Clean up the in-progress tracker
+      this.refreshInProgress.delete(accountId);
+    }
   }
 
   /**
@@ -192,19 +209,14 @@ export class AccountSelector {
         lastUpdated: new Date(),
       };
       
-      // Update cache
-      await pool.query(
-        `INSERT INTO account_quotas (account_id, total_space, used_space, available_space, last_refreshed)
-         VALUES ($1, $2, $3, $4, NOW())
-         ON CONFLICT (account_id) 
-         DO UPDATE SET 
-           total_space = $2,
-           used_space = $3,
-           available_space = $4,
-           last_refreshed = NOW(),
-           updated_at = NOW()`,
-        [accountId, quota.total, quota.used, quota.available]
-      );
+      // Update accounts table cache
+      await this.accountRepository.updateQuota(accountId, {
+        total: quota.total,
+        used: quota.used,
+        available: quota.available, // This is free bytes
+        usagePercent: quota.total ? (quota.used / quota.total) * 100 : 0,
+        lastCheckedAt: new Date()
+      });
       
       logger.info({ accountId, availableSpace: quota.available }, 'Quota refreshed');
       
@@ -228,11 +240,11 @@ export class AccountSelector {
    */
   async updateQuotaAfterUpload(accountId: string, uploadedSize: number): Promise<void> {
     await pool.query(
-      `UPDATE account_quotas 
-       SET used_space = used_space + $1,
-           available_space = available_space - $1,
+      `UPDATE accounts 
+       SET quota_used = COALESCE(quota_used, 0) + $1,
+           quota_available = GREATEST(0, COALESCE(quota_available, 0) - $1),
            updated_at = NOW()
-       WHERE account_id = $2`,
+       WHERE id = $2`,
       [uploadedSize, accountId]
     );
     

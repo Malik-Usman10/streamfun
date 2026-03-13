@@ -335,13 +335,18 @@ export class OAuthService {
       // Exchange code for tokens
       const tokens = await this.exchangeCodeForTokens(state.provider, code);
 
+      // Obscure client_secret before storing
+      const obscuredClientSecret = await this.rcloneConfigService.encryptField(
+        this.oauthConfigs[state.provider].clientSecret
+      );
+
       // Create rclone remote config
       const remote: RcloneRemote = {
         name: state.remoteName,
         type: this.getProviderType(state.provider),
         config: {
           client_id: this.oauthConfigs[state.provider].clientId,
-          client_secret: this.oauthConfigs[state.provider].clientSecret,
+          client_secret: obscuredClientSecret,
           token: JSON.stringify({
             access_token: tokens.access_token,
             token_type: tokens.token_type,

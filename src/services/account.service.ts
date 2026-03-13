@@ -114,7 +114,73 @@ export class AccountService {
     logger.info({ accountId }, 'Account deleted successfully');
   }
 
+  /**
+   * Get decrypted credentials for an account
+   */
+  async getCredentials(accountId: string): Promise<ProviderCredentials> {
+    const account = await this.accountRepository.findById(accountId);
+    if (!account) {
+      throw new Error('Account not found');
+    }
+
+    const decrypted = await this.encryptionService.decrypt(account.credentialsEncrypted);
+    return JSON.parse(decrypted);
+  }
+
   async getAccountStatus(accountId: string): Promise<Account | null> {
     return this.accountRepository.findById(accountId);
+  }
+
+  async updateAccountQuota(accountId: string, quota: any): Promise<void> {
+    await this.accountRepository.updateQuota(accountId, quota);
+  }
+
+  async updateAccountHealth(accountId: string, health: any): Promise<void> {
+    await this.accountRepository.updateHealth(accountId, health);
+  }
+
+  /**
+   * Sync quotas for all accounts
+   */
+  async syncAllQuotas(): Promise<void> {
+    logger.info('Starting full quota synchronization for all accounts');
+    const accounts = await this.listAccounts();
+    
+    for (const account of accounts) {
+      if (account.status === 'active') {
+        try {
+          await this.refreshAccountQuota(account.id);
+        } catch (error) {
+          logger.warn({ error, accountId: account.id }, 'Failed to sync quota for account during full sync');
+        }
+      }
+    }
+    logger.info('Full quota synchronization completed');
+  }
+
+  /**
+   * Refresh quota for a specific account
+   */
+  async refreshAccountQuota(accountId: string): Promise<void> {
+    const account = await this.accountRepository.findById(accountId);
+    if (!account) return;
+
+    try {
+      const provider = this.providerFactory.getProvider(account.providerType);
+      const quota = await provider.getQuotaInfo(account);
+      
+      await this.accountRepository.updateQuota(account.id, {
+        total: quota.total || 0,
+        used: quota.used || 0,
+        available: quota.available || 0,
+        usagePercent: quota.total ? (Number(quota.used || 0) / Number(quota.total)) * 100 : 0,
+        lastCheckedAt: new Date(),
+      });
+      
+      logger.debug({ accountId, provider: account.providerType }, 'Refreshed account quota');
+    } catch (error: any) {
+      logger.error({ error: error.message, accountId }, 'Failed to refresh account quota');
+      throw error;
+    }
   }
 }

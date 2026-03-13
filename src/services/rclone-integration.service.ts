@@ -10,6 +10,7 @@ export interface CreateRemoteParams {
   providerType: ProviderType;
   remoteConfig: RcloneRemote;
   accountIdentifier?: string;
+  remotePath?: string; // Optional path within the remote (e.g., bucket name for Blomp)
 }
 
 export interface ConnectionTestResult {
@@ -28,7 +29,7 @@ export class RcloneIntegrationService {
    * Create rclone remote and corresponding account entry
    */
   async createRemoteWithAccount(params: CreateRemoteParams): Promise<{ remote: RcloneRemote; accountId: string }> {
-    const { remoteName, providerType, remoteConfig, accountIdentifier } = params;
+    const { remoteName, providerType, remoteConfig, accountIdentifier, remotePath } = params;
 
     try {
       // First, add the remote to rclone config
@@ -41,6 +42,7 @@ export class RcloneIntegrationService {
         type: 'session' as const,
         data: {
           remoteName,
+          ...(remotePath && { remotePath }), // Include remotePath if provided (e.g., for Blomp bucket)
           ...remoteConfig.config
         }
       };
@@ -129,7 +131,10 @@ export class RcloneIntegrationService {
    */
   async testConnection(remoteName: string, timeoutMs: number = 10000, remotePath?: string): Promise<ConnectionTestResult> {
     return new Promise((resolve) => {
-      const remoteTarget = remotePath ? `${remoteName}:${remotePath}` : `${remoteName}:`;
+      // rclone requires a colon after the remote name to list its contents
+      // e.g. `rclone lsd myremote:` or `rclone lsd myremote:path/to/dir`
+      const targetPath = remotePath ? (remotePath.startsWith('/') ? remotePath.substring(1) : remotePath) : '';
+      const remoteTarget = `${remoteName}:${targetPath}`;
       logger.debug({ remoteName, remotePath, remoteTarget }, 'Testing connection with target');
       const process = spawn('rclone', ['lsd', remoteTarget]);
 
@@ -232,12 +237,11 @@ export class RcloneIntegrationService {
   }
 
   /**
-   * List all remotes with their account and connection status
+   * List all remotes with their account info (quick fetch, no connection test)
    */
-  async listRemotesWithStatus(): Promise<Array<{
+  async listRemotesWithAccounts(): Promise<Array<{
     remote: RcloneRemote;
     account: any | null;
-    connectionStatus: ConnectionTestResult;
   }>> {
     try {
       const remotes = await this.rcloneConfigService.listRemotes();
@@ -254,20 +258,9 @@ export class RcloneIntegrationService {
         remotes.map(async (remote) => {
           const account = accounts.find(a => a.accountIdentifier === remote.name) || null;
           
-          // Extract remotePath from rclone config if available
-          // For Swift/Blomp, use the user field (email) as fallback
-          let remotePath = remote.config.remotePath;
-          if (!remotePath && remote.type === 'swift' && remote.config.user) {
-            remotePath = remote.config.user;
-            logger.debug({ remoteName: remote.name, remotePath }, 'Using user field as remotePath for Swift remote');
-          }
-          
-          const connectionStatus = await this.testConnection(remote.name, 10000, remotePath);
-
           return {
             remote,
-            account,
-            connectionStatus
+            account
           };
         })
       );
@@ -290,8 +283,8 @@ export class RcloneIntegrationService {
     available: boolean;
   }> {
     return new Promise((resolve) => {
-      // Set a timeout for the about command (5 seconds)
-      const timeoutMs = 5000;
+      // Set a timeout for the about command (15 seconds, increased to prevent initial auth timeout failures)
+      const timeoutMs = 15000;
       let timedOut = false;
 
       const remoteTarget = remotePath ? `${remoteName}:${remotePath}` : `${remoteName}:`;
@@ -326,9 +319,9 @@ export class RcloneIntegrationService {
             logger.info({ remoteName, quota: data }, 'Retrieved quota information');
             
             resolve({
-              total: data.total,
-              used: data.used,
-              free: data.free,
+              total: typeof data.total === 'number' ? data.total : (data.total ? Number(data.total) : undefined),
+              used: typeof data.used === 'number' ? data.used : (data.used ? Number(data.used) : undefined),
+              free: typeof data.free === 'number' ? data.free : (data.free ? Number(data.free) : undefined),
               available: true
             });
           } catch (parseError) {

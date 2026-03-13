@@ -93,6 +93,7 @@ export interface IStorageProvider {
   validateToken(account: Account): Promise<boolean>;
   
   uploadFile(account: Account, file: FileUpload): Promise<UploadResult>;
+  uploadFromUrl?(account: Account, url: string, filename: string): Promise<UploadResult>;
   downloadFile(account: Account, fileId: string): Promise<ReadableStream>;
   deleteFile(account: Account, fileId: string): Promise<DeleteResult>;
   listFiles(account: Account, options: ListOptions): Promise<FileList>;

@@ -12,13 +12,17 @@ class MediaPlayer {
     this.elements = {
       closeButton: null,
       contentContainer: null,
-      mediaInfo: null,
+      mediaHeader: null,
       mediaTitle: null,
-      mediaMeta: null
+      mediaMeta: null,
+      prevButton: null,
+      nextButton: null
     };
     this.currentFile = null;
+    this.fileList = [];
+    this.currentIndex = -1;
     this.focusTrap = null;
-    
+
     this.init();
   }
 
@@ -36,9 +40,11 @@ class MediaPlayer {
   cacheElements() {
     this.elements.closeButton = document.getElementById('media-player-close');
     this.elements.contentContainer = document.getElementById('media-player-content');
-    this.elements.mediaInfo = document.getElementById('media-info');
+    this.elements.mediaHeader = document.getElementById('media-player-header');
     this.elements.mediaTitle = document.getElementById('media-title');
     this.elements.mediaMeta = document.getElementById('media-meta');
+    this.elements.prevButton = document.getElementById('media-prev-btn');
+    this.elements.nextButton = document.getElementById('media-next-btn');
   }
 
   /**
@@ -64,22 +70,50 @@ class MediaPlayer {
       if (e.key === 'Escape' && this.container.classList.contains('active')) {
         this.close();
       }
+
+      // Arrow keys for navigation (images only)
+      if (this.container.classList.contains('active') && this.isImage()) {
+        if (e.key === 'ArrowLeft') {
+          e.preventDefault();
+          this.showPrevious();
+        } else if (e.key === 'ArrowRight') {
+          e.preventDefault();
+          this.showNext();
+        }
+      }
     });
 
     // Listen for media play events
     window.addEventListener('media:play', (e) => {
-      const { file } = e.detail;
-      this.play(file);
+      const { file, fileList, index } = e.detail;
+      this.play(file, fileList, index);
     });
+
+    // Navigation button clicks
+    if (this.elements.prevButton) {
+      this.elements.prevButton.addEventListener('click', () => {
+        this.showPrevious();
+      });
+    }
+
+    if (this.elements.nextButton) {
+      this.elements.nextButton.addEventListener('click', () => {
+        this.showNext();
+      });
+    }
   }
 
   /**
    * Play media file
    * @param {Object} file - File object to play
+   * @param {Array} fileList - List of all files in current view
+   * @param {number} index - Current file index in the list
    */
-  play(file) {
+  play(file, fileList = [], index = -1) {
     this.currentFile = file;
-    
+    this.fileList = fileList;
+    this.currentIndex = index;
+
     const isVideo = file.mimeType?.startsWith('video/');
     const isImage = file.mimeType?.startsWith('image/');
 
@@ -100,6 +134,9 @@ class MediaPlayer {
 
     // Update media info
     this.updateMediaInfo(file);
+
+    // Update navigation buttons visibility
+    this.updateNavigationButtons();
 
     // Open modal
     this.open();
@@ -189,6 +226,10 @@ class MediaPlayer {
           </div>
           
           <div class="video-controls-right">
+            <button class="video-control-btn speed-btn" id="speed-btn" aria-label="Playback speed" title="Playback speed">
+              <span class="speed-label">1x</span>
+            </button>
+            
             <button class="video-control-btn" id="volume-btn" aria-label="Mute/Unmute">
               <svg class="volume-high-icon" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
@@ -296,8 +337,8 @@ class MediaPlayer {
     // Keyboard shortcuts
     document.addEventListener('keydown', (e) => {
       if (!this.isOpen()) return;
-      
-      switch(e.key) {
+
+      switch (e.key) {
         case ' ':
         case 'k':
           e.preventDefault();
@@ -360,6 +401,20 @@ class MediaPlayer {
       }
     });
 
+    // Speed control
+    const speedBtn = document.getElementById('speed-btn');
+    const speeds = [0.5, 0.75, 1, 1.25, 1.5, 2];
+    let currentSpeedIndex = 2; // default 1x
+
+    if (speedBtn) {
+      speedBtn.addEventListener('click', () => {
+        currentSpeedIndex = (currentSpeedIndex + 1) % speeds.length;
+        const newSpeed = speeds[currentSpeedIndex];
+        video.playbackRate = newSpeed;
+        speedBtn.querySelector('.speed-label').textContent = `${newSpeed}x`;
+      });
+    }
+
     // Progress bar
     video.addEventListener('timeupdate', () => {
       const percent = (video.currentTime / video.duration) * 100;
@@ -397,7 +452,7 @@ class MediaPlayer {
       if (isSeeking) {
         seek(e);
       }
-      
+
       // Show tooltip on hover
       if (e.target.closest('#progress-container')) {
         const rect = progressBar.getBoundingClientRect();
@@ -428,34 +483,49 @@ class MediaPlayer {
       loadingSpinner.style.display = 'none';
     });
 
-    // Auto-hide controls
+    // Auto-hide controls and header
     const showControls = () => {
       controlsBar.classList.add('visible');
+      if (this.elements.mediaHeader) {
+        this.elements.mediaHeader.classList.add('visible');
+      }
       clearTimeout(controlsTimeout);
-      
+
       if (!video.paused) {
         controlsTimeout = setTimeout(() => {
           controlsBar.classList.remove('visible');
+          if (this.elements.mediaHeader) {
+            this.elements.mediaHeader.classList.remove('visible');
+          }
         }, 3000);
       }
     };
 
     this.elements.contentContainer.addEventListener('mousemove', showControls);
     this.elements.contentContainer.addEventListener('mouseenter', showControls);
-    
+
     video.addEventListener('play', () => {
       controlsTimeout = setTimeout(() => {
         controlsBar.classList.remove('visible');
+        if (this.elements.mediaHeader) {
+          this.elements.mediaHeader.classList.remove('visible');
+        }
       }, 3000);
     });
 
     video.addEventListener('pause', () => {
       clearTimeout(controlsTimeout);
       controlsBar.classList.add('visible');
+      if (this.elements.mediaHeader) {
+        this.elements.mediaHeader.classList.add('visible');
+      }
     });
 
     // Show controls initially
     controlsBar.classList.add('visible');
+    if (this.elements.mediaHeader) {
+      this.elements.mediaHeader.classList.add('visible');
+    }
 
     // Error handling
     video.addEventListener('error', (e) => {
@@ -474,16 +544,16 @@ class MediaPlayer {
     feedback.className = `skip-feedback skip-${direction}`;
     feedback.innerHTML = `
       <svg viewBox="0 0 24 24" fill="currentColor">
-        ${direction === 'forward' ? 
-          '<path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z"/>' :
-          '<path d="M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z"/>'
-        }
+        ${direction === 'forward' ?
+        '<path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z"/>' :
+        '<path d="M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z"/>'
+      }
       </svg>
       <span>15s</span>
     `;
-    
+
     this.elements.contentContainer.appendChild(feedback);
-    
+
     setTimeout(() => {
       feedback.remove();
     }, 500);
@@ -510,7 +580,44 @@ class MediaPlayer {
     const img = document.createElement('img');
     img.className = 'media-image';
     img.alt = escapeHtml(file.filename);
+
+    // ALWAYS load full resolution image for viewing
     img.src = `http://localhost:3000/api/files/${file.id}/play`;
+
+    // Show loading message while full image loads
+    const loadingMsg = document.createElement('div');
+    loadingMsg.className = 'image-loading-message';
+    loadingMsg.innerHTML = `
+      <div class="spinner"></div>
+      <p>Loading full resolution image...</p>
+    `;
+    loadingMsg.style.cssText = `
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      text-align: center;
+      color: white;
+      z-index: 20;
+    `;
+    this.elements.contentContainer.appendChild(loadingMsg);
+
+    img.addEventListener('load', () => {
+      loadingMsg.remove();
+    });
+
+    img.addEventListener('error', () => {
+      loadingMsg.remove();
+    });
+
+    // Add zoom functionality
+    let isZoomed = false;
+
+    img.addEventListener('dblclick', (e) => {
+      e.preventDefault();
+      isZoomed = !isZoomed;
+      img.classList.toggle('zoomed', isZoomed);
+    });
 
     // Add error handling
     img.addEventListener('error', () => {
@@ -518,14 +625,50 @@ class MediaPlayer {
       this.showError('Failed to load image. Please try again.');
     });
 
-    // Add loading indicator
+    // Add loading indicator with blur effect
     img.style.opacity = '0';
+    img.style.filter = 'blur(10px)';
     img.addEventListener('load', () => {
-      img.style.transition = 'opacity 0.3s';
+      img.style.transition = 'opacity 0.3s, filter 0.3s';
       img.style.opacity = '1';
+      img.style.filter = 'blur(0px)';
     });
 
     this.elements.contentContainer.appendChild(img);
+
+    // Add bottom info bar for images
+    const counterText = this.fileList.length > 1
+      ? `${this.currentIndex + 1} / ${this.fileList.length}`
+      : '';
+
+    const infoBar = document.createElement('div');
+    infoBar.className = 'image-info-bar';
+    infoBar.innerHTML = `
+      ${counterText ? `<div class="image-info-counter">${counterText}</div>` : ''}
+    `;
+    this.elements.contentContainer.appendChild(infoBar);
+
+    // Auto-hide header and info bar for images (same as video)
+    let imageControlsTimeout;
+    const showImageControls = () => {
+      if (this.elements.mediaHeader) {
+        this.elements.mediaHeader.classList.add('visible');
+      }
+      infoBar.classList.add('visible');
+      clearTimeout(imageControlsTimeout);
+      imageControlsTimeout = setTimeout(() => {
+        if (this.elements.mediaHeader) {
+          this.elements.mediaHeader.classList.remove('visible');
+        }
+        infoBar.classList.remove('visible');
+      }, 3000);
+    };
+
+    this.elements.contentContainer.addEventListener('mousemove', showImageControls);
+    this.elements.contentContainer.addEventListener('mouseenter', showImageControls);
+
+    // Show initially
+    showImageControls();
   }
 
   /**
@@ -547,8 +690,9 @@ class MediaPlayer {
       this.elements.mediaMeta.textContent = parts.join(' • ');
     }
 
-    if (this.elements.mediaInfo) {
-      this.elements.mediaInfo.style.display = 'block';
+    // Show the header
+    if (this.elements.mediaHeader) {
+      this.elements.mediaHeader.style.display = 'flex';
     }
   }
 
@@ -621,8 +765,8 @@ class MediaPlayer {
 
       // Clear content
       this.elements.contentContainer.innerHTML = '';
-      if (this.elements.mediaInfo) {
-        this.elements.mediaInfo.style.display = 'none';
+      if (this.elements.mediaHeader) {
+        this.elements.mediaHeader.style.display = 'none';
       }
 
       this.currentFile = null;
@@ -635,6 +779,51 @@ class MediaPlayer {
    */
   isOpen() {
     return this.container.classList.contains('active');
+  }
+
+  /**
+   * Check if current file is an image
+   * @returns {boolean}
+   */
+  isImage() {
+    return this.currentFile?.mimeType?.startsWith('image/');
+  }
+
+  /**
+   * Show previous file in the list
+   */
+  showPrevious() {
+    if (this.currentIndex > 0 && this.fileList.length > 0) {
+      const prevFile = this.fileList[this.currentIndex - 1];
+      this.play(prevFile, this.fileList, this.currentIndex - 1);
+    }
+  }
+
+  /**
+   * Show next file in the list
+   */
+  showNext() {
+    if (this.currentIndex < this.fileList.length - 1 && this.fileList.length > 0) {
+      const nextFile = this.fileList[this.currentIndex + 1];
+      this.play(nextFile, this.fileList, this.currentIndex + 1);
+    }
+  }
+
+  /**
+   * Update navigation buttons visibility and state
+   */
+  updateNavigationButtons() {
+    const showNav = this.isImage() && this.fileList.length > 1;
+
+    if (this.elements.prevButton) {
+      this.elements.prevButton.style.display = showNav ? 'flex' : 'none';
+      this.elements.prevButton.disabled = this.currentIndex <= 0;
+    }
+
+    if (this.elements.nextButton) {
+      this.elements.nextButton.style.display = showNav ? 'flex' : 'none';
+      this.elements.nextButton.disabled = this.currentIndex >= this.fileList.length - 1;
+    }
   }
 
   /**

@@ -3,7 +3,7 @@ import { appConfig } from './config/index.js';
 import logger from './utils/logger.js';
 import { testConnection, closeConnection } from './database/connection.js';
 import { testRedisConnection, closeRedisConnection } from './database/redis.js';
-import { createApp } from './app.js';
+import { createApp, getAppContext } from './app.js';
 import { RcloneConfigService } from './services/rclone-config.service.js';
 
 const app = createApp();
@@ -11,8 +11,14 @@ const app = createApp();
 // Graceful shutdown handler
 async function shutdown(signal: string) {
   logger.info(`${signal} received, starting graceful shutdown`);
-  
+
   try {
+    const ctx = getAppContext();
+    if (ctx) {
+      await ctx.scanner.stop();
+      await ctx.queue.close();
+      await ctx.backupQueue.close();
+    }
     await closeConnection();
     await closeRedisConnection();
     logger.info('Graceful shutdown completed');
@@ -53,10 +59,39 @@ async function start() {
     }
     
     // Start Express server
-    app.listen(appConfig.server.port, () => {
+    app.listen(appConfig.server.port, async () => {
       logger.info(
         `StreamFun server started on port ${appConfig.server.port} in ${appConfig.server.env} mode`
       );
+
+      // Start directory scanner and upload worker
+      const ctx = getAppContext();
+      if (ctx) {
+        try {
+          // Start BullMQ worker
+          ctx.queue.startWorker();
+
+          // Recover any interrupted uploads from before last restart
+          await ctx.queue.recoverInterrupted();
+
+          // Performance: Initial quota sync for all accounts ONE TIME on startup
+          logger.info('Syncing initial quotas for all accounts...');
+          ctx.accountService.syncAllQuotas().catch(err => {
+            logger.error({ err }, 'Initial quota sync failed (non-fatal)');
+          });
+
+          // Start watching /uploads directory
+          await ctx.scanner.start();
+
+          // Initialize backup system
+          ctx.backupQueue.startWorker();
+          await ctx.backupQueue.updateSchedule();
+
+          logger.info('Auto-upload system started successfully');
+        } catch (err) {
+          logger.error({ err }, 'Failed to start auto-upload system (non-fatal)');
+        }
+      }
     });
   } catch (error) {
     logger.error({ error }, 'Failed to start server');

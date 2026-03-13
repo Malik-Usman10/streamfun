@@ -22,7 +22,7 @@ export class StreamService {
 
     if (cached) {
       logger.info({ fileId }, 'Streaming link retrieved from cache');
-      const data = JSON.parse(cached);
+      const data = JSON.parse(String(cached));
       return {
         url: data.url,
         expiresAt: new Date(data.expiresAt),
@@ -35,6 +35,15 @@ export class StreamService {
     const file = await this.fileRepository.findById(fileId);
     if (!file) {
       throw new Error('File not found');
+    }
+
+    // Chunked files MUST be handled via internal proxy to merge pieces
+    if (file.isChunked) {
+      const baseUrl = process.env.API_BASE_URL || 'http://localhost:3000';
+      return {
+        url: `${baseUrl}/api/files/${fileId}/play`,
+        expiresAt: new Date(Date.now() + 86400000), // 24 hours
+      };
     }
 
     const account = await this.accountRepository.findById(file.accountId);

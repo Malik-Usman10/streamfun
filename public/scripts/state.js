@@ -7,11 +7,20 @@ class AppState {
   constructor() {
     this.state = {
       currentCategory: 'videos', // 'videos' | 'images'
+      categoryFilter: null,      // Current category filter (e.g., 'Wallpapers')
       theme: 'light',            // 'light' | 'dark'
       files: [],                 // Array of file objects
       accounts: [],              // Array of account objects
       stats: {},                 // Statistics object
       isLoading: false,          // Global loading state
+      isLoadingMore: false,      // Pagination loading state
+      pagination: {
+        page: 1,
+        limit: 50,
+        total: 0,
+        totalPages: 0,
+        hasMore: false
+      },
       sidebarOpen: false,        // Mobile sidebar state
       error: null                // Global error state
     };
@@ -91,30 +100,50 @@ class AppState {
   reset() {
     this.setState({
       currentCategory: 'videos',
+      categoryFilter: null,
       theme: 'light',
       files: [],
       accounts: [],
       stats: {},
       isLoading: false,
+      isLoadingMore: false,
+      pagination: {
+        page: 1,
+        limit: 50,
+        total: 0,
+        totalPages: 0,
+        hasMore: false
+      },
       sidebarOpen: false,
       error: null
     });
   }
 
   /**
-   * Get filtered files based on current category
+   * Get filtered files based on current category and category filter
    * @returns {Array} Filtered files array
    */
   getFilteredFiles() {
-    const { files, currentCategory } = this.state;
+    const { files, currentCategory, categoryFilter } = this.state;
     
+    let filteredFiles = files;
+    
+    // Filter by file type (videos/images)
     if (currentCategory === 'videos') {
-      return files.filter(file => file.mimeType?.startsWith('video/'));
+      filteredFiles = filteredFiles.filter(file => file.mimeType?.startsWith('video/'));
     } else if (currentCategory === 'images') {
-      return files.filter(file => file.mimeType?.startsWith('image/'));
+      filteredFiles = filteredFiles.filter(file => file.mimeType?.startsWith('image/'));
     }
     
-    return files;
+    // Filter by category (collection name)
+    if (categoryFilter) {
+      filteredFiles = filteredFiles.filter(file => 
+        file.collectionName === categoryFilter || 
+        (categoryFilter === 'Uncategorized' && !file.collectionName)
+      );
+    }
+    
+    return filteredFiles;
   }
 
   /**
@@ -131,6 +160,28 @@ class AppState {
    */
   setLoading(isLoading) {
     this.setState({ isLoading });
+  }
+
+  /**
+   * Set loading more state
+   * @param {boolean} isLoadingMore - Loading more state
+   */
+  setLoadingMore(isLoadingMore) {
+    this.setState({ isLoadingMore });
+  }
+
+  /**
+   * Set pagination state
+   * @param {Object} pagination - Pagination object
+   */
+  setPagination(pagination) {
+    this.setState({
+      pagination: {
+        ...this.state.pagination,
+        ...pagination,
+        hasMore: pagination.page < pagination.totalPages
+      }
+    });
   }
 
   /**
@@ -158,11 +209,19 @@ class AppState {
       return;
     }
     
-    this.setState({ currentCategory: category });
+    this.setState({ currentCategory: category, categoryFilter: null });
   }
 
   /**
-   * Set files array
+   * Set category filter
+   * @param {string|null} categoryFilter - Category name to filter by
+   */
+  setCategoryFilter(categoryFilter) {
+    this.setState({ categoryFilter });
+  }
+
+  /**
+   * Set files array (resets current files)
    * @param {Array} files - Array of file objects
    */
   setFiles(files) {
@@ -170,11 +229,28 @@ class AppState {
   }
 
   /**
-   * Add a file to the files array
+   * Append files to the existing array
+   * @param {Array} newFiles - Array of file objects to append
+   */
+  appendFiles(newFiles) {
+    if (!Array.isArray(newFiles)) return;
+    
+    // Prevent duplicates by checking IDs
+    const currentIds = new Set(this.state.files.map(f => f.id));
+    const uniqueNewFiles = newFiles.filter(f => !currentIds.has(f.id));
+    
+    this.setState({ 
+      files: [...this.state.files, ...uniqueNewFiles] 
+    });
+  }
+
+  /**
+   * Add a single file to the files array
    * @param {Object} file - File object to add
    */
   addFile(file) {
-    this.setState({ files: [...this.state.files, file] });
+    // Only add if not strictly managed by pagination
+    this.setState({ files: [file, ...this.state.files] });
   }
 
   /**
