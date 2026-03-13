@@ -1,15 +1,15 @@
 # Multi-stage Dockerfile for streamfun
 FROM oven/bun:1.3-alpine AS base
 
-# Install system dependencies: ffmpeg (thumbnails), curl (healthcheck), rclone
-RUN apk add --no-cache ffmpeg curl bash && \
+# Install system dependencies: ffmpeg (thumbnails), curl (healthcheck), rclone, pg_dump
+RUN apk add --no-cache ffmpeg curl bash postgresql16-client && \
     curl https://rclone.org/install.sh | bash
 
 WORKDIR /app
 
 # ─── Dependency stage ───────────────────────────────────────────────────────
 FROM base AS deps
-COPY package.json bun.lockb* ./
+COPY package.json bun.lock* ./
 RUN bun install --frozen-lockfile
 
 # ─── Build stage ────────────────────────────────────────────────────────────

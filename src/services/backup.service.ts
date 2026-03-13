@@ -62,7 +62,7 @@ export class BackupService {
       await this.uploadToCloud(localPath, remoteTarget);
 
       // 3. Cleanup local file
-      await unlink(localPath);
+      await unlink(localPath).catch(() => {});
 
       await this.settingsRepo.set('backup_last_run', new Date().toISOString());
       await this.settingsRepo.set('backup_status', 'success');
@@ -84,17 +84,22 @@ export class BackupService {
 
   private async dumpDatabase(outputPath: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      logger.info('Starting database dump via Docker exec');
+      logger.info('Starting database dump');
       
-      // Use docker exec since database is in a container and pg_dump might not be on host
-      const containerName = 'streamfun-postgres';
-      
-      // Use sh -c to allow pipe to gzip on the host
-      const command = `docker exec -e PGPASSWORD=${appConfig.database.password} ${containerName} pg_dump -U ${appConfig.database.user} -d ${appConfig.database.name} | gzip > ${outputPath}`;
+      // Try standard pg_dump first (best for container-to-container or local)
+      // If DATABASE_HOST is localhost and fails, we might be in a weird hybrid state
+      const env = {
+        ...process.env,
+        PGPASSWORD: appConfig.database.password,
+      };
+
+      // Construct pg_dump command and pipe to gzip
+      // Using --no-owner --no-privileges to make backups more portable
+      const command = `pg_dump -h ${appConfig.database.host} -p ${appConfig.database.port} -U ${appConfig.database.user} -d ${appConfig.database.name} --no-owner --no-privileges | gzip > ${outputPath}`;
       
       logger.debug({ command: command.replace(appConfig.database.password, '********') }, 'Executing backup command');
       
-      const dumpProcess = spawn('sh', ['-c', command]);
+      const dumpProcess = spawn('sh', ['-c', command], { env });
 
       let errorOutput = '';
       dumpProcess.stderr.on('data', (data) => {
@@ -102,21 +107,34 @@ export class BackupService {
         logger.debug({ stderr: data.toString() }, 'pg_dump stderr');
       });
 
-      // Add a safety timeout of 5 minutes for the dump
+      // 5 minute timeout
       const timeout = setTimeout(() => {
         logger.error('Database dump timed out after 5 minutes');
         dumpProcess.kill();
         reject(new Error('Database dump timed out'));
       }, 5 * 60 * 1000);
 
-      dumpProcess.on('close', (code) => {
+      dumpProcess.on('close', async (code) => {
         clearTimeout(timeout);
         if (code === 0) {
           logger.info('Database dump completed successfully');
           resolve();
         } else {
+          // If pg_dump failed and we are in a dev environment with docker, maybe try docker exec as fallback?
+          // No, better to log why it failed. Most likely 'pg_dump: command not found'
           logger.error({ code, errorOutput }, 'Database dump failed');
-          reject(new Error(`Database dump failed with code ${code}: ${errorOutput.trim()}`));
+          
+          if (errorOutput.includes('not found') || errorOutput.includes('No such file')) {
+            logger.info('pg_dump not found on host, trying docker exec fallback...');
+            try {
+              await this.dumpViaDocker(outputPath);
+              resolve();
+            } catch (dockerErr: any) {
+              reject(new Error(`Both pg_dump and docker exec failed. pg_dump error: ${errorOutput.trim()}. Docker error: ${dockerErr.message}`));
+            }
+          } else {
+            reject(new Error(`Database dump failed with code ${code}: ${errorOutput.trim()}`));
+          }
         }
       });
 
@@ -128,6 +146,24 @@ export class BackupService {
     });
   }
 
+  private async dumpViaDocker(outputPath: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const containerName = 'streamfun-postgres';
+      const command = `docker exec -e PGPASSWORD=${appConfig.database.password} ${containerName} pg_dump -U ${appConfig.database.user} -d ${appConfig.database.name} --no-owner --no-privileges | gzip > ${outputPath}`;
+      
+      logger.info({ containerName }, 'Executing dump via docker exec');
+      const dockerProc = spawn('sh', ['-c', command]);
+      
+      let errorOutput = '';
+      dockerProc.stderr.on('data', (data) => { errorOutput += data.toString(); });
+      
+      dockerProc.on('close', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`Docker dump failed: ${errorOutput.trim()}`));
+      });
+    });
+  }
+
   private async uploadToCloud(localPath: string, remoteTarget: string): Promise<void> {
     return new Promise((resolve, reject) => {
       logger.info({ localPath, remoteTarget }, 'Starting upload to cloud');
@@ -135,7 +171,9 @@ export class BackupService {
       const uploadProcess = spawn('rclone', [
         'copyto',
         localPath,
-        remoteTarget
+        remoteTarget,
+        '--low-level-retries', '3',
+        '--contimeout', '60s'
       ]);
 
       let errorOutput = '';
@@ -144,7 +182,7 @@ export class BackupService {
         logger.debug({ stderr: data.toString() }, 'rclone stderr');
       });
 
-      // Add a safety timeout of 10 minutes for the upload
+      // 10 minute timeout
       const timeout = setTimeout(() => {
         logger.error('Cloud upload timed out after 10 minutes');
         uploadProcess.kill();
