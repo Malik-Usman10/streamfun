@@ -34,9 +34,8 @@ async function loadMigrations(): Promise<Migration[]> {
   
   const migrations: Migration[] = [];
   
-  for (const file of files.sort()) {
+  for (const file of files) {
     if (file.endsWith('.sql')) {
-      const sql = await readFile(join(migrationsDir, file), 'utf-8');
       const match = file.match(/^(\d+)_(.+)\.sql$/);
       
       if (match) {
@@ -44,13 +43,14 @@ async function loadMigrations(): Promise<Migration[]> {
           id: parseInt(match[1], 10),
           name: match[2],
           filename: file,
-          sql,
+          sql: await readFile(join(migrationsDir, file), 'utf-8'),
         });
       }
     }
   }
   
-  return migrations;
+  // Sort migrations numerically by ID
+  return migrations.sort((a, b) => a.id - b.id);
 }
 
 async function runMigration(migration: Migration): Promise<void> {
