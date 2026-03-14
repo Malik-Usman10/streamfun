@@ -90,8 +90,13 @@ export class AutoUploadQueue {
     this.worker = new Worker<AutoUploadJobData>(
       QUEUE_NAME,
       async (job: Job<AutoUploadJobData>) => {
-        logger.debug({ jobId: job.id, scanJobId: job.data.scanJobId }, 'Worker picking up job');
-        await this.processJob(job);
+        logger.info({ jobId: job.id, scanJobId: job.data.scanJobId, filename: job.data.filename }, 'AUTO-UPLOAD: Worker picking up job from queue');
+        try {
+          await this.processJob(job);
+        } catch (err: any) {
+          logger.error({ jobId: job.id, scanJobId: job.data.scanJobId, error: err.message }, 'AUTO-UPLOAD: Worker job processing crashed');
+          throw err;
+        }
       },
       {
         connection: redisConnection,
@@ -131,88 +136,128 @@ export class AutoUploadQueue {
       return;
     }
 
-    // Pick the best cloud account by quota — try all providers, pick first that has space
-    let providerType: ProviderType;
-    let selectedAccountId: string;
-
+    // Higher-level try-catch for the entire upload process to handle unexpected crashes
     try {
-      // Update status to show we are actively working
-      await this.scanJobRepo.updateProgress(scanJobId, 0, 'pending');
-      // We can't easily change the status string in the DB without changing the enum, 
-      // so we use the error_message field temporarily or just log it.
-      // Actually, let's just log it and rely on the fact that the worker IS moving.
-      // Better: let's add a way to show a custom message.
-      logger.info({ scanJobId, filename }, 'Selecting best account for auto-upload...');
+      // Get valid accounts sorted by space
+      const selectionResult = await this.accountSelector.selectBestAccountAcrossProviders(fileSize);
       
-      const { accountId, provider } = await this.pickBestAccount(fileSize);
-      providerType = provider;
-      selectedAccountId = accountId;
+      let selectedAccountId: string = selectionResult.accountId;
+      let providerType: ProviderType = selectionResult.account.providerType;
       
-      logger.info({ scanJobId, filename, providerType, selectedAccountId }, 'Account selected for auto-upload');
+      const maxRetries = 2; // Try up to 3 accounts total
+      let currentTry = 0;
+      let uploadSuccess = false;
+      let lastError: any = null;
+
+      // Fetch a list of potential accounts to try if the first one fails
+      const allAccounts = await this.accountRepositoryFindAllActive();
+      const candidateAccounts = allAccounts
+        .filter(a => (Number(a.quota_available || a.quotaAvailable || 0) >= fileSize))
+        .sort((a, b) => Number(b.quota_available || b.quotaAvailable || 0) - Number(a.quota_available || a.quotaAvailable || 0))
+        .slice(0, 3); // Top 3 candidates
+
+      for (const account of candidateAccounts) {
+        selectedAccountId = account.id;
+        providerType = account.providerType || account.provider_type;
+        
+        logger.info({ scanJobId, filename, providerType, selectedAccountId, attempt: currentTry + 1 }, 'AUTO-UPLOAD: Attempting upload with account');
+        
+        try {
+          // Update status to show we are actively working with this specific account
+          await this.scanJobRepo.markUploading(scanJobId, providerType, selectedAccountId);
+          await this.scanJobRepo.updateProgress(scanJobId, 0, 'pending');
+
+          const chunkSize = appConfig.upload.chunkSize;
+          const totalChunks = Math.ceil(fileSize / chunkSize);
+
+          // Initialize chunked upload
+          const isImage = mimeType.startsWith('image/');
+          const collectionName = isImage
+            ? (directoryName ?? filename.replace(/\.[^/.]+$/, ''))
+            : undefined;
+
+          const fileId = await this.chunkManager.initializeChunkedUpload({
+            filename,
+            size: fileSize,
+            chunkSize,
+            totalChunks,
+            providerType,
+            mimeType,
+            encrypt: true,
+            collectionName,
+          });
+
+          logger.info({ scanJobId, fileId, filename, totalChunks }, 'AUTO-UPLOAD: Starting data transfer to provider');
+
+          // Upload chunks
+          for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+            const chunkStart = chunkIndex * chunkSize;
+            const actualChunkSize = Math.min(chunkSize, fileSize - chunkStart);
+
+            const chunkBuffer = await this.readFileChunk(sourcePath, chunkStart, actualChunkSize);
+            const stream = new ReadableStream({
+              start(controller) {
+                controller.enqueue(chunkBuffer);
+                controller.close();
+              },
+            });
+
+            await this.chunkManager.uploadChunkData(fileId, chunkIndex, stream, actualChunkSize);
+
+            const progress = Math.round(((chunkIndex + 1) / totalChunks) * 100);
+            await this.scanJobRepo.updateProgress(scanJobId, progress);
+            await job.updateProgress(progress);
+          }
+
+          // Finalize
+          await this.chunkManager.finalizeChunkedUpload(fileId);
+
+          // Mark scan job complete
+          await this.scanJobRepo.markCompleted(scanJobId, fileId);
+          logger.info({ scanJobId, filename, fileId }, 'AUTO-UPLOAD: Upload successful');
+          
+          // Refresh quota
+          if (this.accountService) {
+            this.accountService.refreshAccountQuota(selectedAccountId).catch(() => {});
+          }
+
+          uploadSuccess = true;
+          break; // Exit the account loop
+        } catch (err: any) {
+          logger.warn({ scanJobId, filename, providerType, error: err.message }, 'AUTO-UPLOAD: Upload attempt failed, trying next account if available');
+          lastError = err;
+          currentTry++;
+          // continue to next account
+        }
+      }
+
+      if (!uploadSuccess) {
+        const msg = lastError?.message ?? 'All available cloud accounts failed during upload';
+        logger.error({ scanJobId, filename, error: msg }, 'AUTO-UPLOAD: All upload attempts failed');
+        await this.scanJobRepo.markFailed(scanJobId, msg);
+        throw lastError || new Error(msg);
+      }
+
     } catch (err: any) {
-      const msg = err?.message ?? 'No cloud account with sufficient space';
-      await this.scanJobRepo.markFailed(scanJobId, msg);
+      // This catch handles selection failures or other logic errors
+      if (!job.failedReason) {
+         const msg = err?.message ?? 'An unexpected error occurred during auto-upload';
+         await this.scanJobRepo.markFailed(scanJobId, msg);
+      }
       throw err;
     }
+  }
 
-    await this.scanJobRepo.markUploading(scanJobId, providerType, selectedAccountId);
-
-    const chunkSize = appConfig.upload.chunkSize; // 10 MB default
-    const totalChunks = Math.ceil(fileSize / chunkSize);
-
-    // Determine collection name for images (directory name), or video name
-    const isImage = mimeType.startsWith('image/');
-    const collectionName = isImage
-      ? (directoryName ?? filename.replace(/\.[^/.]+$/, ''))
-      : undefined; // videos don't use collectionName; directory name stored separately
-
-    // Initialize chunked upload (creates DB record, generates encryption keys)
-    const fileId = await this.chunkManager.initializeChunkedUpload({
-      filename,
-      size: fileSize,
-      chunkSize,
-      totalChunks,
-      providerType,
-      mimeType,
-      encrypt: true,
-      collectionName,
-    });
-
-    logger.info({ scanJobId, fileId, filename, totalChunks }, 'Starting chunked upload from disk');
-
-    // Upload chunks sequentially from disk file (streaming)
-    for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
-      const chunkStart = chunkIndex * chunkSize;
-      const actualChunkSize = Math.min(chunkSize, fileSize - chunkStart);
-
-      const chunkBuffer = await this.readFileChunk(sourcePath, chunkStart, actualChunkSize);
-
-      const stream = new ReadableStream({
-        start(controller) {
-          controller.enqueue(chunkBuffer);
-          controller.close();
-        },
-      });
-
-      await this.chunkManager.uploadChunkData(fileId, chunkIndex, stream, actualChunkSize);
-
-      const progress = Math.round(((chunkIndex + 1) / totalChunks) * 100);
-      await this.scanJobRepo.updateProgress(scanJobId, progress);
-      await job.updateProgress(progress);
-    }
-
-    // Finalize: generate thumbnail, complete DB record
-    await this.chunkManager.finalizeChunkedUpload(fileId);
-
-    // Mark scan job complete with the linked file ID
-    await this.scanJobRepo.markCompleted(scanJobId, fileId);
-    logger.info({ scanJobId, filename: job.data.filename }, 'Auto-upload job completed successfully');
-
-    // Refresh account quota after successful upload
-    if (this.accountService && selectedAccountId) {
-      this.accountService.refreshAccountQuota(selectedAccountId).catch((err: any) => {
-        logger.warn({ err: err.message, accountId: selectedAccountId }, 'Failed to refresh quota after upload');
-      });
+  /** Gets all active accounts directly from Repo/DB Helper */
+  private async accountRepositoryFindAllActive(): Promise<any[]> {
+    // This is a helper since we don't have accountRepo directly here
+    // But we have accountSelector which can get them
+    try {
+      const accounts = await (this.accountSelector as any).accountRepository.findAll();
+      return accounts.filter((a: any) => a.status === 'active');
+    } catch (err) {
+      logger.error({ error: err }, 'Failed to fetch active accounts in worker');
+      return [];
     }
   }
 

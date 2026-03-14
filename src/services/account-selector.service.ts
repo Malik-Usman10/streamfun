@@ -198,17 +198,32 @@ export class AccountSelector {
     
     const provider = this.providerFactory.getProvider(account.providerType);
     
+    // Refresh quota from provider
+    const timeoutMs = 20000; // 20 seconds timeout for quota check
+    let timeoutHandle: any;
+
+    const timeoutPromise = new Promise<any>((_, reject) => { // Changed QuotaInfo to any to match provider.getQuotaInfo return type
+      timeoutHandle = setTimeout(() => {
+        reject(new Error(`Quota refresh timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+    });
+
     try {
-      const quota = await provider.getQuotaInfo(account);
+      const quota = await Promise.race([
+        provider.getQuotaInfo(account), // Original call
+        timeoutPromise
+      ]);
+      
+      clearTimeout(timeoutHandle);
       
       const quotaInfo: QuotaInfo = {
         accountId,
-        totalSpace: quota.total,
-        usedSpace: quota.used,
-        availableSpace: quota.available,
-        lastUpdated: new Date(),
+        totalSpace: quota.total || 0,
+        usedSpace: quota.used || 0,
+        availableSpace: quota.available || 0,
+        lastUpdated: new Date()
       };
-      
+
       // Update accounts table cache
       await this.accountRepository.updateQuota(accountId, {
         total: quota.total,
