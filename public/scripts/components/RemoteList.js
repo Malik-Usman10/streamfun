@@ -255,7 +255,7 @@ class RemoteList {
     
     if (!isLoadingStatus) {
       statusClass = remote.connectionStatus?.success ? 'status-online' : 'status-offline';
-      statusText = remote.connectionStatus?.success ? 'Online' : 'Offline';
+      statusText = remote.connectionStatus?.message || (remote.connectionStatus?.success ? 'Online' : 'Offline');
       statusIcon = remote.connectionStatus?.success 
         ? '<circle cx="12" cy="12" r="10"></circle><polyline points="9 12 11 14 15 10"></polyline>'
         : '<circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line>';
