@@ -130,6 +130,7 @@ export class RcloneIntegrationService {
    * Test connection to a remote using rclone lsd command
    */
   async testConnection(remoteName: string, timeoutMs: number = 10000, remotePath?: string): Promise<ConnectionTestResult> {
+    logger.info({ remoteName, remotePath }, 'Running active connection test (rclone lsd)');
     return new Promise((resolve) => {
       // rclone requires a colon after the remote name to list its contents
       // e.g. `rclone lsd myremote:` or `rclone lsd myremote:path/to/dir`
@@ -227,15 +228,24 @@ export class RcloneIntegrationService {
       
       if (!remote) {
         connectionStatus = { success: false, message: 'Remote not found', error: 'Remote does not exist' };
-      } else if (skipTest && account) {
-        // Use cached status from database
-        connectionStatus = {
-          success: account.status === 'active',
-          message: account.healthError || (account.status === 'active' ? 'Online' : 'Offline'),
-          error: account.healthError
-        };
+      } else if (skipTest) {
+        if (account) {
+          // Use cached status from database
+          connectionStatus = {
+            success: account.status === 'active',
+            message: account.healthError || (account.status === 'active' ? 'Online' : 'Offline'),
+            error: account.healthError
+          };
+        } else {
+          // No account and skipTest is true - return unknown status
+          connectionStatus = {
+            success: false,
+            message: 'Status not checked',
+            error: 'No associated account found for background check'
+          };
+        }
       } else {
-        // Run active connection test
+        // Run active connection test (only if not skipTest)
         connectionStatus = await this.testConnection(remoteName, 10000, remotePath);
       }
 

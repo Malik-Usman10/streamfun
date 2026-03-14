@@ -154,12 +154,13 @@ class MediaPlayer {
     video.id = 'custom-video-player';
 
     const source = document.createElement('source');
-    source.src = `http://localhost:3000/api/files/${file.id}/play`;
+    source.src = `/api/files/${file.id}/play`;
     source.type = file.mimeType || 'video/mp4';
 
     video.appendChild(source);
-
-    // Create custom controls container
+    
+    // Fallback for some browsers
+    video.src = `/api/files/${file.id}/play`;
     const controlsContainer = document.createElement('div');
     controlsContainer.className = 'custom-video-controls';
     controlsContainer.innerHTML = `
@@ -582,7 +583,7 @@ class MediaPlayer {
     img.alt = escapeHtml(file.filename);
 
     // ALWAYS load full resolution image for viewing
-    img.src = `http://localhost:3000/api/files/${file.id}/play`;
+    img.src = `/api/files/${file.id}/play`;
 
     // Show loading message while full image loads
     const loadingMsg = document.createElement('div');

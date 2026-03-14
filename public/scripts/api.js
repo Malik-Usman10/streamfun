@@ -3,7 +3,7 @@
  * Handles all API calls with consistent error handling and retry logic
  */
 
-const API_BASE = 'http://localhost:3000/api';
+const API_BASE = '/api';
 const MAX_RETRIES = 3;
 const RETRY_DELAY = 1000; // ms
 

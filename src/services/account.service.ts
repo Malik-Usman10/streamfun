@@ -144,24 +144,38 @@ export class AccountService {
    */
   async syncAllQuotas(): Promise<void> {
     const accounts = await this.listAccounts();
-    const activeAccounts = accounts.filter(a => a.status === 'active');
+    const now = new Date();
+    const STALE_THRESHOLD = 24 * 60 * 60 * 1000; // 24 hours
+    
+    const activeAccounts = accounts.filter(a => {
+      if (a.status !== 'active') return false;
+      if (!a.quotaLastCheckedAt) return true;
+      return (now.getTime() - new Date(a.quotaLastCheckedAt).getTime()) > STALE_THRESHOLD;
+    });
     
     if (activeAccounts.length === 0) {
       logger.info('No active accounts found for quota sync');
       return;
     }
 
-    logger.info({ count: activeAccounts.length }, 'Starting parallel quota synchronization for active accounts');
+    logger.info({ count: activeAccounts.length }, 'Starting limited-concurrency quota synchronization for active accounts');
     
-    await Promise.allSettled(
-      activeAccounts.map(async (account) => {
-        try {
-          await this.refreshAccountQuota(account.id);
-        } catch (error: any) {
-          logger.warn({ error: error.message, accountId: account.id }, 'Failed to sync quota for account during full sync');
-        }
-      })
-    );
+    // Use a small concurrency limit to avoid overwhelming the system
+    const CONCURRENCY_LIMIT = 5;
+    for (let i = 0; i < activeAccounts.length; i += CONCURRENCY_LIMIT) {
+      const batch = activeAccounts.slice(i, i + CONCURRENCY_LIMIT);
+      logger.debug({ batchSize: batch.length, index: i }, 'Syncing batch of accounts');
+      
+      await Promise.allSettled(
+        batch.map(async (account) => {
+          try {
+            await this.refreshAccountQuota(account.id);
+          } catch (error: any) {
+            logger.warn({ error: error.message, accountId: account.id }, 'Failed to sync quota for account during batch sync');
+          }
+        })
+      );
+    }
     
     logger.info('Full quota synchronization completed');
   }

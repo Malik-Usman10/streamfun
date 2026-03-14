@@ -143,9 +143,9 @@ export class OAuthService {
   /**
    * Generate OAuth authorization URL for a provider
    */
-  generateAuthUrl(provider: OAuthProvider, remoteName: string): { authUrl: string; state: string } {
-    const config = this.oauthConfigs[provider];
-    if (!config) {
+  generateAuthUrl(provider: OAuthProvider, remoteName: string, redirectUri: string): { authUrl: string; state: string } {
+    const config = { ...this.oauthConfigs[provider], redirectUri };
+    if (!config.clientId) {
       throw new Error(`OAuth config not found for provider: ${provider}`);
     }
 

@@ -19,19 +19,32 @@ export function createRcloneRoutes(accountService: AccountService): Router {
     'google-drive': {
       clientId: process.env.GOOGLE_DRIVE_CLIENT_ID || '',
       clientSecret: process.env.GOOGLE_DRIVE_CLIENT_SECRET || '',
-      redirectUri: `${appConfig.server.apiBaseUrl}/api/rclone/oauth/callback`
+      redirectUri: '' // Will be set dynamically
     },
     'dropbox': {
       clientId: process.env.DROPBOX_CLIENT_ID || '',
       clientSecret: process.env.DROPBOX_CLIENT_SECRET || '',
-      redirectUri: `${appConfig.server.apiBaseUrl}/api/rclone/oauth/callback`
+      redirectUri: '' // Will be set dynamically
     },
     'onedrive': {
       clientId: process.env.ONEDRIVE_CLIENT_ID || '',
       clientSecret: process.env.ONEDRIVE_CLIENT_SECRET || '',
-      redirectUri: `${appConfig.server.apiBaseUrl}/api/rclone/oauth/callback`
+      redirectUri: '' // Will be set dynamically
     }
   };
+
+  // Determine the base API URL for OAuth redirects
+  // Priority: API_BASE_URL env var > request host
+  const getApiBaseUrl = (req: Request) => {
+    if (process.env.API_BASE_URL && process.env.API_BASE_URL !== 'http://localhost:3000') {
+      return process.env.API_BASE_URL;
+    }
+    const protocol = req.protocol;
+    const host = req.get('host');
+    return `${protocol}://${host}`;
+  };
+
+  // The oauthConfigs will be dynamically updated in the routes
 
   // Initialize services
   const rcloneConfigService = new RcloneConfigService();
@@ -684,10 +697,12 @@ router.get('/oauth/authorize/:provider', async (req: Request, res: Response) => 
       });
     }
 
-    // Generate OAuth URL
+    // Generate OAuth URL with dynamic redirect URI
+    const redirectUri = `${getApiBaseUrl(req)}/api/rclone/oauth/callback`;
     const { authUrl, state } = oauthService.generateAuthUrl(
       provider as 'google-drive' | 'dropbox' | 'onedrive',
-      remoteName
+      remoteName,
+      redirectUri
     );
 
     logger.info({ provider, remoteName, state }, 'Generated OAuth authorization URL');
