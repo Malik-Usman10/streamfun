@@ -222,23 +222,16 @@ export class AutoUploadQueue {
    * Tries all providers registered in the DB, falls back across them.
    */
   private async pickBestAccount(fileSize: number): Promise<{ accountId: string; provider: ProviderType }> {
-    const { pool } = await import('../database/connection.js');
-    const result = await pool.query(
-      `SELECT id, provider_type, quota_available
-       FROM accounts
-       WHERE status = 'active'
-         AND quota_available >= $1
-       ORDER BY quota_available DESC
-       LIMIT 1`,
-      [fileSize]
-    );
-
-    if (result.rows.length === 0) {
-      throw new Error(`No cloud account has enough space for ${fileSize} bytes`);
+    try {
+      const selected = await this.accountSelector.selectBestAccountAcrossProviders(fileSize);
+      return { 
+        accountId: selected.accountId, 
+        provider: selected.account.providerType 
+      };
+    } catch (err: any) {
+      logger.error({ err: err.message, fileSize }, 'Account selection failed for auto-upload');
+      throw err;
     }
-
-    const row = result.rows[0];
-    return { accountId: row.id, provider: row.provider_type as ProviderType };
   }
 
   async close(): Promise<void> {

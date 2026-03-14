@@ -400,13 +400,8 @@ export class RcloneStorageProvider implements IStorageProvider {
         unit: 'bytes',
       };
     } catch (error: any) {
-      logger.warn({ error: error.message, remoteName }, 'Failed to get quota info from rclone');
-      return {
-        total: 0,
-        used: 0,
-        available: 0,
-        unit: 'bytes',
-      };
+      logger.error({ error: error.message, remoteName }, 'Failed to get quota info from rclone');
+      throw new Error(`Failed to get quota info: ${error.message}`);
     }
   }
 

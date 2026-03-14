@@ -221,13 +221,25 @@ export class AccountSelector {
       logger.info({ accountId, availableSpace: quota.available }, 'Quota refreshed');
       
       return quotaInfo;
-    } catch (error) {
-      logger.warn({ accountId, error }, 'Failed to refresh quota, using defaults');
+    } catch (error: any) {
+      logger.warn({ accountId, error: error.message }, 'Failed to refresh quota from provider, trying last known value in database');
       
-      // Return default quota if refresh fails
+      // Try to get last known quota from DB
+      const account = await this.accountRepository.findById(accountId);
+      if (account && account.quotaTotal !== null) {
+        return {
+          accountId,
+          totalSpace: Number(account.quotaTotal),
+          usedSpace: Number(account.quotaUsed || 0),
+          availableSpace: Number(account.quotaAvailable || 0),
+          lastUpdated: account.quotaLastCheckedAt || new Date(),
+        };
+      }
+
+      // Final fallback to 100 GB default
       return {
         accountId,
-        totalSpace: 100 * 1024 * 1024 * 1024, // 100 GB default
+        totalSpace: 100 * 1024 * 1024 * 1024,
         usedSpace: 0,
         availableSpace: 100 * 1024 * 1024 * 1024,
         lastUpdated: new Date(),
@@ -249,5 +261,59 @@ export class AccountSelector {
     );
     
     logger.debug({ accountId, uploadedSize }, 'Quota updated after upload');
+  }
+
+  /**
+   * Select the single best account across ALL provider types based on available space
+   */
+  async selectBestAccountAcrossProviders(fileSize: number): Promise<{ accountId: string; account: Account; availableSpace: number }> {
+    logger.info({ fileSize }, 'Selecting best account across all providers');
+    
+    const accounts = await this.accountRepository.findAll();
+    const activeAccounts = accounts.filter(a => a.status === 'active');
+    
+    if (activeAccounts.length === 0) {
+      throw new Error('No active cloud accounts available');
+    }
+    
+    // Get quota for all accounts (uses cache or refreshes if stale)
+    // Use limited concurrency to avoid overwhelming the system with rclone processes
+    const CONCURRENCY_LIMIT = 5;
+    const accountsWithQuota: { account: Account; quota: QuotaInfo }[] = [];
+    
+    for (let i = 0; i < activeAccounts.length; i += CONCURRENCY_LIMIT) {
+      const batch = activeAccounts.slice(i, i + CONCURRENCY_LIMIT);
+      const batchResults = await Promise.all(
+        batch.map(async (account) => {
+          try {
+            const quota = await this.getAvailableQuota(account.id);
+            return { account, quota };
+          } catch (error) {
+            logger.warn({ accountId: account.id, error }, 'Failed to get quota for account during global selection');
+            return { account, quota: { availableSpace: 0 } as QuotaInfo }; 
+          }
+        })
+      );
+      accountsWithQuota.push(...batchResults);
+    }
+    
+    // Filter and sort
+    const validAccounts = accountsWithQuota
+      .filter(a => a.quota.availableSpace >= fileSize)
+      .sort((a, b) => b.quota.availableSpace - a.quota.availableSpace);
+      
+    if (validAccounts.length === 0) {
+      // Find the account with the most space to give a better error message
+      const sortedBySpace = accountsWithQuota.sort((a, b) => b.quota.availableSpace - a.quota.availableSpace);
+      const bestSpaceAvailable = sortedBySpace[0]?.quota.availableSpace || 0;
+      throw new Error(`No account has enough space. Need ${fileSize} bytes, best available is ${bestSpaceAvailable} bytes`);
+    }
+    
+    const selected = validAccounts[0];
+    return {
+      accountId: selected.account.id,
+      account: selected.account,
+      availableSpace: selected.quota.availableSpace
+    };
   }
 }
