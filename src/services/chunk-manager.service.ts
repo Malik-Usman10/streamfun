@@ -381,6 +381,7 @@ export class ChunkManager {
     mimeType?: string;
     encrypt: boolean;
     collectionName?: string;
+    accountId?: string;
   }): Promise<string> {
     const fileId = uuidv4();
 
@@ -403,17 +404,24 @@ export class ChunkManager {
     // Only automatically categorize images. Videos should remain uncategorized by default.
     const collectionName = params.collectionName || (category === 'images' ? generateDefaultCollectionName() : undefined);
 
-    // Select accounts for this upload
-    const selection = await this.accountSelector.selectAccountsForUpload(
-      params.size,
-      params.providerType
-    );
+    // Select account for this upload
+    let account;
+    if (params.accountId) {
+      account = await this.accountRepository.findById(params.accountId);
+      if (!account) {
+        throw new Error(`Specified account not found: ${params.accountId}`);
+      }
+    } else {
+      const selection = await this.accountSelector.selectAccountsForUpload(
+        params.size,
+        params.providerType
+      );
 
-    if (selection.accounts.length === 0) {
-      throw new Error('No accounts available with sufficient quota');
+      if (selection.accounts.length === 0) {
+        throw new Error('No accounts available with sufficient quota');
+      }
+      account = selection.accounts[0].account;
     }
-
-    const account = selection.accounts[0].account;
 
     // Create file record in database
     await this.fileRepository.create({

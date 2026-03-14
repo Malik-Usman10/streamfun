@@ -185,6 +185,7 @@ export class AutoUploadQueue {
             mimeType,
             encrypt: true,
             collectionName,
+            accountId: selectedAccountId,
           });
 
           logger.info({ scanJobId, fileId, filename, totalChunks }, 'AUTO-UPLOAD: Starting data transfer to provider');

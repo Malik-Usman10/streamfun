@@ -83,8 +83,46 @@ export class ThumbnailService {
       logger.info({ imagePath }, 'Image thumbnail generated using Sharp');
       return dataUrl;
     } catch (error: any) {
-      logger.error({ error: error.message, imagePath }, 'Failed to generate image thumbnail with Sharp');
-      throw new Error(`Thumbnail generation failed: ${error.message}`);
+      logger.warn({ error: error.message, imagePath }, 'Sharp failed to generate image thumbnail, attempting ffmpeg fallback');
+      
+      try {
+        const dataUrl = await this.generateImageThumbnailWithFFmpeg(imagePath, options);
+        logger.info({ imagePath }, 'Image thumbnail generated using ffmpeg fallback');
+        return dataUrl;
+      } catch (fallbackError: any) {
+        logger.error({ error: fallbackError.message, imagePath }, 'FFmpeg fallback also failed for image thumbnail');
+        throw new Error(`Thumbnail generation failed (Sharp and FFmpeg): ${error.message} / ${fallbackError.message}`);
+      }
+    }
+  }
+
+  /**
+   * Helper to generate image thumbnail using ffmpeg (slower but more resilient than Sharp for some formats)
+   */
+  private async generateImageThumbnailWithFFmpeg(
+    imagePath: string,
+    options: ThumbnailOptions = {}
+  ): Promise<string> {
+    const { width = this.defaultWidth, height = this.defaultHeight } = options;
+    const outputPath = join(tmpdir(), `image-thumb-${uuidv4()}.jpg`);
+
+    try {
+      // Use ffmpeg to convert image to jpeg thumbnail
+      // -i input -vf scale=w:h (maintaining aspect ratio) -vframes 1 output
+      await execAsync(
+        `ffmpeg -i "${imagePath}" -vframes 1 -vf "scale=${width}:${height}:force_original_aspect_ratio=decrease" "${outputPath}"`,
+        { timeout: 15000 }
+      );
+
+      const buffer = await readFile(outputPath);
+      const base64 = buffer.toString('base64');
+      const dataUrl = `data:image/jpeg;base64,${base64}`;
+
+      await unlink(outputPath);
+      return dataUrl;
+    } catch (error) {
+      try { await unlink(outputPath); } catch {}
+      throw error;
     }
   }
 
@@ -99,13 +137,29 @@ export class ThumbnailService {
     try {
       if (mimeType.startsWith('image/')) {
         const { width = this.defaultWidth, height = this.defaultHeight, quality = this.defaultQuality } = options;
-        const outBuffer = await sharp(buffer)
-          .resize(width, height, { fit: 'inside', withoutEnlargement: true })
-          .jpeg({ quality })
-          .toBuffer();
+        try {
+          const outBuffer = await sharp(buffer)
+            .resize(width, height, { fit: 'inside', withoutEnlargement: true })
+            .jpeg({ quality })
+            .toBuffer();
 
-        const base64 = outBuffer.toString('base64');
-        return `data:image/jpeg;base64,${base64}`;
+          const base64 = outBuffer.toString('base64');
+          return `data:image/jpeg;base64,${base64}`;
+        } catch (sharpError: any) {
+          logger.warn({ error: sharpError.message }, 'Sharp failed to generate thumbnail from buffer, trying ffmpeg fallback');
+          
+          // Write buffer to temp file for ffmpeg
+          const tempPath = join(tmpdir(), `buffer-input-${uuidv4()}.png`); // Assuming PNG or generic image
+          try {
+            await writeFile(tempPath, buffer);
+            const thumbnail = await this.generateImageThumbnailWithFFmpeg(tempPath, options);
+            await unlink(tempPath);
+            return thumbnail;
+          } catch (ffmpegError) {
+            try { await unlink(tempPath); } catch {}
+            throw new Error(`Buffer thumbnail generation failed (Sharp and FFmpeg): ${sharpError.message}`);
+          }
+        }
       } else if (mimeType.startsWith('video/')) {
         // For video, we still need to write to disk for ffmpeg
         const ext = mimeType.split('/')[1] || 'bin';

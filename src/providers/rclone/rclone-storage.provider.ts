@@ -124,50 +124,27 @@ export class RcloneStorageProvider implements IStorageProvider {
       });
 
       // Build remote file path
-      // If filename contains path separators, it's a category-based path
       const remoteFilePath = remotePath
         ? `${remoteName}:${remotePath}/${file.filename}`
         : `${remoteName}:${file.filename}`;
 
-      // Extract directory path (everything except the last component)
-      const remoteDir = remoteFilePath.replace(/\/[^/]+$/, '');
+      // Extract directory path
+      const remoteDir = remoteFilePath.includes('/') 
+        ? remoteFilePath.substring(0, remoteFilePath.lastIndexOf('/'))
+        : remoteFilePath.substring(0, remoteFilePath.lastIndexOf(':') + 1);
       
-      // Create directory structure if needed (for category-based paths)
-      if (file.filename.includes('/')) {
-        try {
-          await execAsync(`rclone mkdir "${remoteDir}"`, {
-            timeout: 30000,
-          });
-        } catch (error: any) {
-          // Ignore errors - directory might already exist
-          logger.debug({ error: error.message }, 'Directory creation skipped or failed');
-        }
-      }
+      logger.debug({ tempFilePath, remoteFilePath, remoteDir }, 'Uploading via rclone copyto');
 
-      // Upload file to remote
-      await execAsync(`rclone copy "${tempFilePath}" "${remoteDir}" --progress`, {
-        timeout: 300000, // 5 minutes
+      // Upload file directly to the final path
+      // This is more atomic than copy + moveto
+      await execAsync(`rclone copyto "${tempFilePath}" "${remoteFilePath}" --progress`, {
+        timeout: 600000, // 10 minutes for large files
+        maxBuffer: 10 * 1024 * 1024, // 10MB buffer for logs
       });
 
-      // Rename the uploaded file to match the desired filename
-      const uploadedTempName = tempFilePath.split('/').pop();
-      const finalFileName = file.filename.split('/').pop();
-      
-      if (uploadedTempName !== finalFileName) {
-        try {
-          await execAsync(
-            `rclone moveto "${remoteDir}/${uploadedTempName}" "${remoteFilePath}"`,
-            { timeout: 30000 }
-          );
-        } catch (error: any) {
-          logger.warn({ error: error.message }, 'File rename failed, using temp name');
-        }
-      }
-
-      // Get the uploaded file ID (use filename as ID for rclone)
+      // Get the uploaded file ID
       const providerFileId = file.filename;
-
-      logger.info({ filename: file.filename, remoteName }, 'File uploaded via rclone');
+      logger.info({ filename: file.filename, remoteName, remoteFilePath }, 'File uploaded via rclone copyto');
 
       return {
         success: true,
@@ -198,10 +175,26 @@ export class RcloneStorageProvider implements IStorageProvider {
         ? `${remoteName}:${remotePath}/${fileId}`
         : `${remoteName}:${fileId}`;
 
-      // Download to a specific temp file instead of tmpdir
-      await execAsync(`rclone copyto "${remoteFilePath}" "${tempFilePath}" --progress`, {
+      logger.debug({ remoteFilePath, tempFilePath }, 'Downloading via rclone copyto');
+
+      // Download to a specific temp file
+      const { stdout, stderr } = await execAsync(`rclone copyto "${remoteFilePath}" "${tempFilePath}"`, {
         timeout: 300000,
+        maxBuffer: 10 * 1024 * 1024,
       });
+
+      if (stderr) {
+        logger.debug({ stderr }, 'Rclone download stderr');
+      }
+
+      // Verify file exists before continuing
+      try {
+        const stats = await stat(tempFilePath);
+        logger.debug({ size: stats.size, tempFilePath }, 'Download temp file verified');
+      } catch (err) {
+        logger.error({ tempFilePath, remoteFilePath, error: err }, 'Temp file missing after rclone success');
+        throw new Error(`Rclone reported success but temp file is missing: ${tempFilePath}`);
+      }
 
       // Create readable stream from temp file
       const fileStream = createReadStream(tempFilePath);
@@ -219,12 +212,22 @@ export class RcloneStorageProvider implements IStorageProvider {
           });
 
           fileStream.on('error', (error) => {
+            logger.error({ error, tempFilePath }, 'File stream error during download');
             controller.error(error);
+            unlink(tempFilePath).catch(() => {});
           });
         },
+        cancel() {
+          fileStream.destroy();
+          unlink(tempFilePath).catch(() => {});
+        }
       });
     } catch (error: any) {
-      logger.error({ error: error.message, fileId }, 'Rclone download failed');
+      logger.error({ error: error.message, fileId, remotePath }, 'Rclone download failed');
+      // Ensure temp file is cleaned up on error
+      try {
+        await unlink(tempFilePath);
+      } catch {}
       throw new Error(`Download failed: ${error.message}`);
     }
   }
