@@ -136,9 +136,19 @@ export class AutoUploadQueue {
     let selectedAccountId: string;
 
     try {
+      // Update status to show we are actively working
+      await this.scanJobRepo.updateProgress(scanJobId, 0, 'pending');
+      // We can't easily change the status string in the DB without changing the enum, 
+      // so we use the error_message field temporarily or just log it.
+      // Actually, let's just log it and rely on the fact that the worker IS moving.
+      // Better: let's add a way to show a custom message.
+      logger.info({ scanJobId, filename }, 'Selecting best account for auto-upload...');
+      
       const { accountId, provider } = await this.pickBestAccount(fileSize);
       providerType = provider;
       selectedAccountId = accountId;
+      
+      logger.info({ scanJobId, filename, providerType, selectedAccountId }, 'Account selected for auto-upload');
     } catch (err: any) {
       const msg = err?.message ?? 'No cloud account with sufficient space';
       await this.scanJobRepo.markFailed(scanJobId, msg);

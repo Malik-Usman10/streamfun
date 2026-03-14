@@ -1126,7 +1126,7 @@ class FullPageDashboard {
                 <div style="height:100%;width:${j.progress}%;background:var(--color-primary);border-radius:99px;transition:width 0.5s;"></div>
               </div>
               <div style="display:flex;justify-content:space-between;margin-top:0.3rem;">
-                <span style="font-size:0.75rem;color:var(--text-secondary);">${j.status === 'uploading' ? '⬆ Uploading' : '⏳ Queued'} · ${j.providerType ?? '—'}</span>
+                <span style="font-size:0.75rem;color:var(--text-secondary);">${j.status === 'uploading' ? '⬆ Uploading' : (j.providerType ? '🔄 Initializing...' : '⏳ Queued')} · ${j.providerType ?? '—'}</span>
                 <span style="font-size:0.75rem;color:var(--color-primary);">${j.progress}%</span>
               </div>
               ${j.status === 'pending' ? `
@@ -1252,7 +1252,7 @@ class FullPageDashboard {
     }
 
     providerSelect.innerHTML = accounts.map(account => `
-      <option value="${account.provider}">${account.accountIdentifier || account.provider} (${account.provider})</option>
+      <option value="${account.provider}">${account.identifier || account.provider} (${account.provider})</option>
     `).join('');
   }
 }
