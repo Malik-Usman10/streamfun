@@ -198,8 +198,10 @@ export class RcloneIntegrationService {
 
   /**
    * Get remote info including connection status
+   * @param remoteName Name of the remote
+   * @param skipTest If true, don't run active connection test, use cached info
    */
-  async getRemoteInfo(remoteName: string): Promise<{
+  async getRemoteInfo(remoteName: string, skipTest: boolean = false): Promise<{
     remote: RcloneRemote | null;
     account: any | null;
     connectionStatus: ConnectionTestResult;
@@ -220,10 +222,22 @@ export class RcloneIntegrationService {
         logger.debug({ remoteName, remotePath }, 'Using user field as remotePath for Swift remote');
       }
 
-      // Test connection
-      const connectionStatus = remote 
-        ? await this.testConnection(remoteName, 10000, remotePath)
-        : { success: false, message: 'Remote not found', error: 'Remote does not exist' };
+      // Determine connection status
+      let connectionStatus: ConnectionTestResult;
+      
+      if (!remote) {
+        connectionStatus = { success: false, message: 'Remote not found', error: 'Remote does not exist' };
+      } else if (skipTest && account) {
+        // Use cached status from database
+        connectionStatus = {
+          success: account.status === 'active',
+          message: account.healthError || (account.status === 'active' ? 'Online' : 'Offline'),
+          error: account.healthError
+        };
+      } else {
+        // Run active connection test
+        connectionStatus = await this.testConnection(remoteName, 10000, remotePath);
+      }
 
       return {
         remote,

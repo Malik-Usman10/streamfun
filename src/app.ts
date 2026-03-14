@@ -136,7 +136,7 @@ export function createApp() {
   // Protected Routes
   app.use('/api/accounts', requireAuth, createAccountRoutes(accountService));
   app.use('/api/files', requireAuth, createFileRoutes(fileService, streamService));
-  app.use('/api/files/upload/chunked', requireAuth, createChunkedUploadRoutes(chunkManager));
+  app.use('/api/files/upload/chunked', requireAuth, createChunkedUploadRoutes(chunkManager, accountService));
   app.use('/api/dashboard', requireAuth, createDashboardRoutes(accountService));
   app.use('/api/rclone', requireAuth, createRcloneRoutes(accountService));
   app.use('/api/scan-jobs', requireAuth, createScanJobRoutes(scanJobRepo, directoryScanner, autoUploadQueue));

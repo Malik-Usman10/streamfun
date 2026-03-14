@@ -154,8 +154,8 @@ export class AccountSelector {
       const lastRefreshed = row.quota_last_checked_at ? new Date(row.quota_last_checked_at) : null;
       const now = new Date();
       
-      // Use cache if less than 15 minutes old (aligned with dashboard cache)
-      if (lastRefreshed && (now.getTime() - lastRefreshed.getTime() < 15 * 60 * 1000)) {
+      // Use cache if less than 24 hours old (aligned with dashboard cache)
+      if (lastRefreshed && (now.getTime() - lastRefreshed.getTime() < 24 * 60 * 60 * 1000)) {
         return {
           accountId: row.id,
           totalSpace: parseInt(row.quota_total || '0'),

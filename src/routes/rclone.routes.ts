@@ -209,8 +209,9 @@ router.get('/remotes', async (req: Request, res: Response) => {
 router.get('/remotes/:remoteName', async (req: Request, res: Response) => {
   try {
     const remoteName = String(req.params.remoteName);
+    const forceRefresh = req.query.refresh === 'true';
 
-    const remoteInfo = await rcloneIntegrationService.getRemoteInfo(remoteName);
+    const remoteInfo = await rcloneIntegrationService.getRemoteInfo(remoteName, !forceRefresh);
 
     if (!remoteInfo.remote) {
       return res.status(404).json({
@@ -219,14 +220,44 @@ router.get('/remotes/:remoteName', async (req: Request, res: Response) => {
       });
     }
 
-    // Get quota info
-    // For Swift/Blomp, use the user field (email) as fallback
+    // Extract remotePath from rclone config if available
     let remotePath = remoteInfo.remote?.config.remotePath;
     if (!remotePath && remoteInfo.remote?.type === 'swift' && remoteInfo.remote.config.user) {
       remotePath = remoteInfo.remote.config.user;
     }
-    
-    const quotaInfo = await rcloneIntegrationService.getQuotaInfo(remoteName, remotePath);
+
+    // Use cached quota from database if available and not stale
+    const account = remoteInfo.account;
+    const cacheStaleTime = 24 * 60 * 60 * 1000; // 24 hours
+    const isCacheValid = account && 
+                        account.quotaLastCheckedAt && 
+                        (new Date().getTime() - new Date(account.quotaLastCheckedAt).getTime() < cacheStaleTime);
+
+    let quotaInfo;
+    if (!forceRefresh && isCacheValid && account.quotaTotal !== null) {
+      logger.debug({ remoteName }, 'Returning cached quota from database for details view');
+      quotaInfo = {
+        total: Number(account.quotaTotal),
+        used: Number(account.quotaUsed),
+        free: Number(account.quotaAvailable),
+        available: true,
+        usagePercent: account.quotaUsagePercent ? Number(account.quotaUsagePercent) : 0
+      };
+    } else {
+      logger.info({ remoteName, forceRefresh }, 'Fetching fresh quota info for details view');
+      quotaInfo = await rcloneIntegrationService.getQuotaInfo(remoteName, remotePath);
+      
+      // Update cache
+      if (account && quotaInfo.available) {
+        await accountService.updateAccountQuota(account.id, {
+          total: quotaInfo.total || 0,
+          used: quotaInfo.used || 0,
+          available: quotaInfo.free || 0,
+          usagePercent: quotaInfo.total ? (Number(quotaInfo.used || 0) / Number(quotaInfo.total)) * 100 : 0,
+          lastCheckedAt: new Date()
+        });
+      }
+    }
 
     res.json({
       success: true,
@@ -237,7 +268,7 @@ router.get('/remotes/:remoteName', async (req: Request, res: Response) => {
         accountId: remoteInfo.account?.id,
         connectionStatus: remoteInfo.connectionStatus,
         quota: quotaInfo,
-        lastChecked: new Date().toISOString()
+        lastChecked: account?.quotaLastCheckedAt || new Date().toISOString()
       }
     });
   } catch (error: any) {
@@ -261,8 +292,8 @@ router.get('/remotes/:remoteName/status', async (req: Request, res: Response) =>
     const remoteName = String(req.params.remoteName);
     const forceRefresh = req.query.force === 'true';
 
-    // Get remote and account info
-    const remoteInfo = await rcloneIntegrationService.getRemoteInfo(remoteName);
+    // Get remote and account info - skip active test if not force refresh
+    const remoteInfo = await rcloneIntegrationService.getRemoteInfo(remoteName, !forceRefresh);
 
     if (!remoteInfo.remote) {
       return res.status(404).json({
@@ -272,7 +303,7 @@ router.get('/remotes/:remoteName/status', async (req: Request, res: Response) =>
     }
 
     const account = remoteInfo.account;
-    const cacheStaleTime = 30 * 60 * 1000; // 30 minutes
+    const cacheStaleTime = 24 * 60 * 60 * 1000; // 24 hours
     const isCacheValid = account && 
                         account.quotaLastCheckedAt && 
                         (new Date().getTime() - new Date(account.quotaLastCheckedAt).getTime() < cacheStaleTime);

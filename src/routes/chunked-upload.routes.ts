@@ -1,10 +1,11 @@
 // Chunked upload routes for large files
 import { Router } from 'express';
 import { ChunkManager } from '../services/chunk-manager.service.js';
+import { AccountService } from '../services/account.service.js';
 import { ProviderType } from '../types/index.js';
 import logger from '../utils/logger.js';
 
-export function createChunkedUploadRoutes(chunkManager: ChunkManager): Router {
+export function createChunkedUploadRoutes(chunkManager: ChunkManager, accountService: AccountService): Router {
   const router = Router();
 
   // Initialize chunked upload
@@ -167,6 +168,13 @@ export function createChunkedUploadRoutes(chunkManager: ChunkManager): Router {
           uploadedAt: file.uploadedAt,
         },
       });
+
+      // Refresh quota for the account used
+      if (file.accountId) {
+        accountService.refreshAccountQuota(file.accountId).catch((err: any) => {
+          logger.warn({ err: err.message, accountId: file.accountId }, 'Failed to refresh quota after manual upload');
+        });
+      }
     } catch (error) {
       next(error);
     }

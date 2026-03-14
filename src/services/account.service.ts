@@ -143,18 +143,26 @@ export class AccountService {
    * Sync quotas for all accounts
    */
   async syncAllQuotas(): Promise<void> {
-    logger.info('Starting full quota synchronization for all accounts');
     const accounts = await this.listAccounts();
+    const activeAccounts = accounts.filter(a => a.status === 'active');
     
-    for (const account of accounts) {
-      if (account.status === 'active') {
+    if (activeAccounts.length === 0) {
+      logger.info('No active accounts found for quota sync');
+      return;
+    }
+
+    logger.info({ count: activeAccounts.length }, 'Starting parallel quota synchronization for active accounts');
+    
+    await Promise.allSettled(
+      activeAccounts.map(async (account) => {
         try {
           await this.refreshAccountQuota(account.id);
-        } catch (error) {
-          logger.warn({ error, accountId: account.id }, 'Failed to sync quota for account during full sync');
+        } catch (error: any) {
+          logger.warn({ error: error.message, accountId: account.id }, 'Failed to sync quota for account during full sync');
         }
-      }
-    }
+      })
+    );
+    
     logger.info('Full quota synchronization completed');
   }
 
