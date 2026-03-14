@@ -268,9 +268,12 @@ export class RcloneIntegrationService {
     account: any | null;
   }>> {
     try {
+      // Step 1: Sync remotes to accounts first to ensure DB is up to date
+      await this.syncRemotesToAccounts();
+
       const remotes = await this.rcloneConfigService.listRemotes();
       
-      // Try to get accounts, but don't fail if it doesn't work
+      // Step 2: Get all accounts
       let accounts: any[] = [];
       try {
         accounts = await this.accountService.listAccounts();
@@ -373,5 +376,66 @@ export class RcloneIntegrationService {
         resolve({ available: false });
       });
     });
+  }
+
+  /**
+   * Synchronize rclone remotes to database accounts
+   * Any remote in rclone config that is NOT in the database will be added automatically
+   */
+  async syncRemotesToAccounts(): Promise<number> {
+    try {
+      const remotes = await this.rcloneConfigService.listRemotes();
+      const accounts = await this.accountService.listAccounts();
+      
+      const existingIdentifiers = new Set(accounts.map(a => a.accountIdentifier));
+      let syncCount = 0;
+
+      for (const remote of remotes) {
+        if (!existingIdentifiers.has(remote.name)) {
+          logger.info({ remoteName: remote.name, type: remote.type }, 'Found rclone remote missing from database, synchronizing...');
+          
+          try {
+            // Determine provider type (map swift back to blomp if needed)
+            let providerType = remote.type;
+            if (remote.type === 'swift') {
+              // Check if it looks like a Blomp account
+              if (remote.config.auth?.includes('blomp') || remote.config.user?.includes('@')) {
+                providerType = 'blomp';
+              }
+            }
+
+            // Extract remotePath if available
+            let remotePath = remote.config.remotePath;
+            if (!remotePath && providerType === 'blomp' && remote.config.user) {
+              remotePath = remote.config.user;
+            }
+
+            const credentials = {
+              type: 'session' as const,
+              data: {
+                remoteName: remote.name,
+                ...(remotePath && { remotePath }),
+                ...remote.config
+              }
+            };
+
+            await this.accountService.registerAccount(providerType as any, credentials);
+            syncCount++;
+            logger.info({ remoteName: remote.name }, 'Successfully synchronized remote to database');
+          } catch (syncError: any) {
+            logger.error({ remoteName: remote.name, error: syncError.message }, 'Failed to synchronize specific remote');
+          }
+        }
+      }
+
+      if (syncCount > 0) {
+        logger.info({ syncCount }, 'Completed rclone-to-database synchronization');
+      }
+      
+      return syncCount;
+    } catch (error: any) {
+      logger.error({ error: error.message }, 'Failed to sync remotes to accounts');
+      return 0;
+    }
   }
 }
