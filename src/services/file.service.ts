@@ -190,7 +190,11 @@ export class FileService {
     throw new UploadError(`Upload failed after ${maxRetries} attempts`, lastError);
   }
 
-  async downloadFile(fileId: string): Promise<{ stream: ReadableStream; file: FileRecord }> {
+  async downloadFile(
+    fileId: string,
+    rangeStart?: number,
+    rangeEnd?: number
+  ): Promise<{ stream: ReadableStream; file: FileRecord }> {
     const file = await this.fileRepository.findById(fileId);
     
     if (!file) {
@@ -199,13 +203,13 @@ export class FileService {
     
     // Handle chunked files differently
     if (file.isChunked) {
-      return await this.downloadChunkedFile(fileId, file);
+      return await this.downloadChunkedFile(fileId, file, rangeStart, rangeEnd);
     }
     
     // Check Redis Stream Cache first
     const cacheKey = `file:stream:${fileId}`;
     const cachedStream = await this.cacheService.getStream(cacheKey);
-    if (cachedStream) {
+    if (cachedStream && !rangeStart && !rangeEnd) {
        logger.info({ fileId }, 'Serving single non-chunked file stream entirely from Redis cache');
        return { stream: cachedStream, file };
     }
@@ -225,16 +229,22 @@ export class FileService {
       stream = await this.encryptionService.decryptFile(stream, file.encryptionKey, file.encryptionIv);
     }
     
-    // Cache the completely built and decrypted stream in Redis
-    // Set a reasonable TTL, like 6 hours
-    stream = this.cacheService.cacheStream(cacheKey, stream, 21600);
+    // Cache the completely built and decrypted stream in Redis (only for full downloads)
+    if (!rangeStart && !rangeEnd) {
+      stream = this.cacheService.cacheStream(cacheKey, stream, 21600);
+    }
 
     await this.bandwidthTracker.recordUsage(account.id, 'download', file.size);
     
     return { stream, file };
   }
 
-  private async downloadChunkedFile(fileId: string, file: FileRecord): Promise<{ stream: ReadableStream; file: FileRecord }> {
+  private async downloadChunkedFile(
+    fileId: string,
+    file: FileRecord,
+    rangeStart?: number,
+    rangeEnd?: number
+  ): Promise<{ stream: ReadableStream; file: FileRecord }> {
     if (!this.chunkManager) {
       throw new Error('ChunkManager not available for chunked file download');
     }
@@ -303,7 +313,7 @@ export class FileService {
     }
     
     // Use ChunkManager for multi-chunk files
-    const stream = await this.chunkManager.downloadFileInChunks(fileId);
+    const stream = await this.chunkManager.downloadFileInChunks(fileId, rangeStart, rangeEnd);
     
     return { stream, file };
   }

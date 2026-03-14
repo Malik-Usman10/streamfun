@@ -197,7 +197,13 @@ export class ChunkManager {
 
     const startChunk = rangeStart ? Math.floor(rangeStart / fileRecord.chunkSize) : 0;
     const maxChunks = fileRecord.chunks.length;
-    const endChunk = rangeEnd ? Math.min(Math.ceil(rangeEnd / fileRecord.chunkSize), maxChunks) : maxChunks;
+    
+    // Calculate endChunk. rangeEnd is inclusive.
+    const endChunk = rangeEnd 
+      ? Math.min(Math.floor(rangeEnd / fileRecord.chunkSize), maxChunks - 1) 
+      : maxChunks - 1;
+
+    logger.debug({ fileId, startChunk, endChunk, rangeStart, rangeEnd }, 'Downloading chunk range');
 
     return this.createChunkStream(fileRecord, startChunk, endChunk, rangeStart, rangeEnd);
   }
@@ -283,13 +289,14 @@ export class ChunkManager {
     startPrefetch(startChunk);
     
     let currentReader: any = null;
+    let absolutePos = startChunk * fileRecord.chunkSize;
 
     return new ReadableStream({
       pull: async (controller) => {
         try {
           while (true) {
             // Check if we are done with all chunks
-            if (currentChunk >= endChunk && !currentReader) {
+            if (currentChunk > endChunk && !currentReader) {
               controller.close();
               return;
             }
@@ -311,6 +318,7 @@ export class ChunkManager {
               
               // Trigger prefetch for upcoming chunks now that we advanced a chunk
               startPrefetch(currentChunk + 1);
+              absolutePos = currentChunk * fileRecord.chunkSize;
             }
 
             // Read from current chunk
@@ -323,9 +331,26 @@ export class ChunkManager {
               currentChunk++;
               // Loop continues to open next chunk
             } else {
-              // Yield data
-              controller.enqueue(value);
-              return; // End pull cycle
+              // Yield data with range-based slicing
+              const chunkStartPos = absolutePos;
+              const chunkEndPos = absolutePos + value.length;
+              absolutePos = chunkEndPos;
+
+              const start = rangeStart !== undefined ? rangeStart : 0;
+              const end = rangeEnd !== undefined ? rangeEnd : Infinity;
+
+              // Check if this slice overlaps with the requested range
+              if (chunkEndPos > start && chunkStartPos <= end) {
+                const sliceStart = Math.max(0, start - chunkStartPos);
+                const sliceEnd = Math.min(value.length, end - chunkStartPos + 1);
+                
+                if (sliceStart < sliceEnd) {
+                  const slice = value.slice(sliceStart, sliceEnd);
+                  controller.enqueue(slice);
+                  return; // End pull cycle after yielding data
+                }
+              }
+              // If this chunk portion is outside the range, continue the while loop
             }
           }
         } catch (error) {

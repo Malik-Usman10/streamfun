@@ -490,67 +490,15 @@ export function createFileRoutes(fileService: FileService, streamService: Stream
         res.setHeader('Content-Range', `bytes ${start}-${end}/${file.size}`);
         res.setHeader('Content-Length', chunkSize.toString());
 
-        // Download file with range
-        const { stream } = await fileService.downloadFile(id);
+        // Optimized: download JUST requested range
+        const { stream } = await fileService.downloadFile(id, start, end);
         const reader = stream.getReader();
 
         try {
-          // Skip to start position efficiently
-          let bytesRead = 0;
-          while (bytesRead < start) {
+          while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-            
-            if (bytesRead + value.length > start) {
-              const offset = start - bytesRead;
-              const remaining = value.length - offset;
-              const bytesToStreamFromThisChunk = Math.min(remaining, chunkSize);
-              res.write(value.slice(offset, offset + bytesToStreamFromThisChunk));
-              bytesRead += value.length;
-              break; 
-            }
-            bytesRead += value.length;
-          }
-
-          // Stream the requested range
-          let totalWritten = (res as any)._header ? (start > 0 ? (start - bytesRead + 0) : 0) : 0; // rough track
-          // Adjust logic: we already wrote a bit above if start was inside a chunk.
-          // Let's refine the loop.
-          
-          let bytesStreamed = 0;
-          // Note: If we wrote something in the skip loop, we need to account for it.
-          // But actually the loop above is a bit messy. Let's simplify.
-        } catch (streamError) {
-          logger.error({ streamError, fileId: id }, 'Error during range streaming');
-          if (!res.headersSent) {
-            return next(streamError);
-          }
-          res.end();
-          return;
-        }
-
-        // Re-implementing streaming logic more cleanly
-        const { stream: cleanStream } = await fileService.downloadFile(id);
-        const cleanReader = cleanStream.getReader();
-        let pos = 0;
-        let written = 0;
-
-        try {
-          while (written < chunkSize) {
-            const { done, value } = await cleanReader.read();
-            if (done) break;
-
-            const chunkStart = pos;
-            const chunkEnd = pos + value.length;
-
-            if (chunkEnd > start && chunkStart <= end) {
-              const sliceStart = Math.max(0, start - chunkStart);
-              const sliceEnd = Math.min(value.length, end - chunkStart + 1);
-              const slice = value.slice(sliceStart, sliceEnd);
-              res.write(slice);
-              written += slice.length;
-            }
-            pos += value.length;
+            res.write(value);
           }
           res.end();
         } catch (error) {

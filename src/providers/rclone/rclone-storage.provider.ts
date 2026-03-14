@@ -1,5 +1,5 @@
 // Rclone-based storage provider adapter
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 import { createReadStream, createWriteStream } from 'fs';
 import { unlink, stat } from 'fs/promises';
@@ -167,7 +167,6 @@ export class RcloneStorageProvider implements IStorageProvider {
   async downloadFile(account: Account, fileId: string): Promise<ReadableStream> {
     const remoteName = await this.getRemoteName(account);
     const remotePath = await this.getRemotePath(account);
-    const tempFilePath = join(tmpdir(), `download-${uuidv4()}`);
 
     try {
       // Download from rclone remote
@@ -175,60 +174,49 @@ export class RcloneStorageProvider implements IStorageProvider {
         ? `${remoteName}:${remotePath}/${fileId}`
         : `${remoteName}:${fileId}`;
 
-      logger.debug({ remoteFilePath, tempFilePath }, 'Downloading via rclone copyto');
+      logger.debug({ remoteFilePath }, 'Streaming via rclone cat');
 
-      // Download to a specific temp file
-      const { stdout, stderr } = await execAsync(`rclone copyto "${remoteFilePath}" "${tempFilePath}"`, {
-        timeout: 300000,
-        maxBuffer: 10 * 1024 * 1024,
-      });
-
-      if (stderr) {
-        logger.debug({ stderr }, 'Rclone download stderr');
-      }
-
-      // Verify file exists before continuing
-      try {
-        const stats = await stat(tempFilePath);
-        logger.debug({ size: stats.size, tempFilePath }, 'Download temp file verified');
-      } catch (err) {
-        logger.error({ tempFilePath, remoteFilePath, error: err }, 'Temp file missing after rclone success');
-        throw new Error(`Rclone reported success but temp file is missing: ${tempFilePath}`);
-      }
-
-      // Create readable stream from temp file
-      const fileStream = createReadStream(tempFilePath);
+      // Spawn rclone cat to stream directly to stdout
+      const child = spawn('rclone', ['cat', remoteFilePath]);
 
       return new ReadableStream({
-        async start(controller) {
-          fileStream.on('data', (chunk: Buffer) => {
+        start(controller) {
+          child.stdout.on('data', (chunk: Buffer) => {
             controller.enqueue(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
           });
 
-          fileStream.on('end', () => {
+          child.stdout.on('end', () => {
             controller.close();
-            // Clean up temp file
-            unlink(tempFilePath).catch(() => {});
           });
 
-          fileStream.on('error', (error) => {
-            logger.error({ error, tempFilePath }, 'File stream error during download');
+          child.stderr.on('data', (data: Buffer) => {
+            const errorMsg = data.toString();
+            if (errorMsg.includes('ERROR') || errorMsg.includes('Failed')) {
+              logger.warn({ error: errorMsg, fileId }, 'Rclone cat stderr');
+            }
+          });
+
+          child.on('error', (error: Error) => {
+            logger.error({ error, fileId }, 'Rclone process error');
             controller.error(error);
-            unlink(tempFilePath).catch(() => {});
+          });
+
+          child.on('close', (code: number | null) => {
+            if (code !== 0 && code !== null) {
+              logger.error({ code, fileId }, 'Rclone cat process exited with error');
+              // Only call error if it hasn't been closed yet
+              try { controller.error(new Error(`Rclone cat exited with code ${code}`)); } catch {}
+            }
           });
         },
         cancel() {
-          fileStream.destroy();
-          unlink(tempFilePath).catch(() => {});
+          logger.debug({ fileId }, 'Killing rclone cat process due to stream cancellation');
+          child.kill();
         }
       });
     } catch (error: any) {
-      logger.error({ error: error.message, fileId, remotePath }, 'Rclone download failed');
-      // Ensure temp file is cleaned up on error
-      try {
-        await unlink(tempFilePath);
-      } catch {}
-      throw new Error(`Download failed: ${error.message}`);
+      logger.error({ error: error.message, fileId, remotePath }, 'Rclone streaming download failed to initialize');
+      throw new Error(`Download initialization failed: ${error.message}`);
     }
   }
 
