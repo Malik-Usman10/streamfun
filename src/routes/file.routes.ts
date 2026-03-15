@@ -469,8 +469,10 @@ export function createFileRoutes(fileService: FileService, streamService: Stream
 
   // Serve file for streaming (supports range requests for video)
   router.get('/:id/play', async (req, res, next) => {
+    const startTime = Date.now();
+    const { id } = req.params;
+    
     try {
-      const { id } = req.params;
       const file = await fileService.getFileMetadata(id);
 
       // Set basic headers for streaming
@@ -478,54 +480,76 @@ export function createFileRoutes(fileService: FileService, streamService: Stream
       res.setHeader('Accept-Ranges', 'bytes');
 
       const range = req.headers.range;
+      let start = 0;
+      let end = file.size - 1;
 
       if (range) {
         // Parse range header
         const parts = range.replace(/bytes=/, '').split('-');
-        const start = parseInt(parts[0], 10);
-        const end = parts[1] ? parseInt(parts[1], 10) : file.size - 1;
+        start = parseInt(parts[0], 10);
+        end = parts[1] ? parseInt(parts[1], 10) : file.size - 1;
         const chunkSize = end - start + 1;
 
         res.status(206); // Partial Content
         res.setHeader('Content-Range', `bytes ${start}-${end}/${file.size}`);
         res.setHeader('Content-Length', chunkSize.toString());
-
-        // Optimized: download JUST requested range
-        const { stream } = await fileService.downloadFile(id, start, end);
-        const reader = stream.getReader();
-
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            res.write(value);
-          }
-          res.end();
-        } catch (error) {
-           if (!res.headersSent) return next(error);
-           res.end();
-        }
+        
+        logger.info({ fileId: id, range: `bytes=${start}-${end}`, size: file.size }, 'Handling range request');
       } else {
-        // No range request - stream entire file
         res.setHeader('Content-Length', file.size.toString());
-
-        try {
-          const { stream } = await fileService.downloadFile(id);
-          const reader = stream.getReader();
-
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            res.write(value);
-          }
-          res.end();
-        } catch (error) {
-          if (!res.headersSent) return next(error);
-          res.end();
-        }
+        logger.info({ fileId: id, size: file.size }, 'Handling full file request');
       }
-    } catch (error) {
-      if (!res.headersSent) next(error);
+
+      // Initialize download
+      const { stream } = await fileService.downloadFile(id, start, end);
+      const reader = stream.getReader();
+      let streamActive = true;
+
+      const cleanup = async () => {
+        if (!streamActive) return;
+        streamActive = false;
+        try {
+          await reader.cancel();
+        } catch (err) {
+          // Ignore cancellation errors if stream is already closed
+        }
+      };
+
+      req.on('close', cleanup);
+
+      let firstByteSent = false;
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          
+          if (!firstByteSent) {
+            const ttfb = Date.now() - startTime;
+            logger.info({ fileId: id, ttfb }, 'First byte sent to client');
+            firstByteSent = true;
+          }
+          
+          res.write(value);
+        }
+        streamActive = false; // Mark as done before end
+        res.end();
+      } catch (streamError: any) {
+         streamActive = false;
+         logger.error({ error: streamError.message, fileId: id }, 'Stream interrupted during playback');
+         if (!res.headersSent) return next(streamError);
+         res.end();
+      } finally {
+        req.off('close', cleanup);
+        reader.releaseLock();
+      }
+    } catch (error: any) {
+      logger.error({ error: error.message, fileId: id }, 'Playback initialization failed');
+      if (!res.headersSent) {
+        res.status(error.name === 'FileNotFoundError' ? 404 : 500).json({ error: error.message });
+      } else {
+        res.end();
+      }
     }
   });
 

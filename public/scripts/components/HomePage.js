@@ -228,11 +228,14 @@ class HomePage {
 
     // Handle clicks just like Gallery.js does (launching MediaPlayer)
     card.addEventListener('click', () => {
-      // If we just inject a `media:play` event, the MediaPlayer expects the entire gallery context.
-      // So instead, clicking a slider item navigates rapidly to the category, filtering that item.
-      if (this.onNavigate) {
-         this.onNavigate(isVideo ? 'videos' : 'images');
-      }
+      // Dispatch media:play event with the file as a single-item list
+      window.dispatchEvent(new CustomEvent('media:play', {
+        detail: {
+          file,
+          fileList: [file],
+          index: 0
+        }
+      }));
     });
 
     return card;

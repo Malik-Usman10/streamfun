@@ -176,36 +176,58 @@ export class RcloneStorageProvider implements IStorageProvider {
 
       logger.debug({ remoteFilePath }, 'Streaming via rclone cat');
 
-      // Spawn rclone cat to stream directly to stdout
-      const child = spawn('rclone', ['cat', remoteFilePath]);
+      // Spawn rclone cat with increased timeouts for slower providers (like Blomp)
+      const args = [
+        'cat',
+        remoteFilePath,
+        '--low-level-retries', '2',
+        '--contimeout', '30s',
+        '--timeout', '60s'
+      ];
+      
+      logger.info({ command: `rclone ${args.join(' ')}` }, 'Executing buffered rclone streaming command');
+      const child = spawn('rclone', args);
 
       return new ReadableStream({
         start(controller) {
+          let hasReceivedData = false;
+          let stderrBuffer = '';
+
           child.stdout.on('data', (chunk: Buffer) => {
-            controller.enqueue(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+            hasReceivedData = true;
+            if (controller.desiredSize !== null) {
+              controller.enqueue(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+            }
           });
 
           child.stdout.on('end', () => {
-            controller.close();
+            try { controller.close(); } catch {}
           });
 
           child.stderr.on('data', (data: Buffer) => {
             const errorMsg = data.toString();
-            if (errorMsg.includes('ERROR') || errorMsg.includes('Failed')) {
-              logger.warn({ error: errorMsg, fileId }, 'Rclone cat stderr');
+            stderrBuffer += errorMsg;
+            if (errorMsg.includes('ERROR') || errorMsg.includes('Failed') || errorMsg.includes('directory not found')) {
+              logger.warn({ error: errorMsg, fileId }, 'Rclone cat stderr activity');
             }
           });
 
           child.on('error', (error: Error) => {
-            logger.error({ error, fileId }, 'Rclone process error');
-            controller.error(error);
+            logger.error({ error, fileId }, 'Rclone process spawn failure');
+            try { controller.error(error); } catch {}
           });
 
           child.on('close', (code: number | null) => {
             if (code !== 0 && code !== null) {
-              logger.error({ code, fileId }, 'Rclone cat process exited with error');
-              // Only call error if it hasn't been closed yet
-              try { controller.error(new Error(`Rclone cat exited with code ${code}`)); } catch {}
+              const errorMessage = stderrBuffer.trim() || `Rclone cat exited with code ${code}`;
+              logger.error({ code, fileId, stderr: stderrBuffer }, `Rclone cat process failed`);
+              
+              if (!hasReceivedData) {
+                // If it failed before any data, it's likely an auth or network error
+                try { controller.error(new Error(`Connection failed: ${errorMessage}`)); } catch {}
+              } else {
+                try { controller.error(new Error(`Stream interrupted: ${errorMessage}`)); } catch {}
+              }
             }
           });
         },

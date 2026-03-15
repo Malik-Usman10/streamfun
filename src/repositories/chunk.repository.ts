@@ -125,7 +125,12 @@ export class ChunkRepository {
     const chunks = await this.getChunksByFileId(fileId);
     
     // Default to a sane chunk size if no chunks exist yet (e.g. from appConfig)
-    const chunkSize = chunks.length > 0 ? chunks[0].chunkSize : 10 * 1024 * 1024;
+    const storedChunkSize = chunks.length > 0 ? chunks[0].chunkSize : 10 * 1024 * 1024;
+    
+    // Correct chunk size if encrypted (stored size includes 16-byte auth tag)
+    const decryptedChunkSize = (file.encryption_key && storedChunkSize > 16) 
+      ? storedChunkSize - 16 
+      : storedChunkSize;
     
     return {
       fileId,
@@ -133,7 +138,7 @@ export class ChunkRepository {
       mimeType: file.mime_type,
       size: file.size,
       totalChunks: chunks.length,
-      chunkSize,
+      chunkSize: decryptedChunkSize,
       encryptionKey: file.encryption_key,
       iv: file.encryption_iv,
       chunks,

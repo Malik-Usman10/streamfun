@@ -103,17 +103,19 @@ export class CacheService {
   cacheStream(key: string, stream: ReadableStream, ttl: number = 3600): ReadableStream {
     // Array to collect buffer pieces as they fly by
     const chunks: Uint8Array[] = [];
+    let currentReader: any = null;
     let streamFailed = false;
 
     return new ReadableStream({
       async start(controller) {
-        const reader = stream.getReader();
+        currentReader = stream.getReader();
 
         try {
           while (true) {
-            const { done, value } = await reader.read();
-            
-            if (done) break;
+            if (!currentReader) break;
+            const result = await currentReader.read();
+            if (result.done) break;
+            const value = result.value;
 
             chunks.push(value);
             controller.enqueue(value);
@@ -123,7 +125,10 @@ export class CacheService {
           streamFailed = true;
           controller.error(error);
         } finally {
-          reader.releaseLock();
+          if (currentReader) {
+            currentReader.releaseLock();
+            currentReader = null;
+          }
           controller.close();
 
           // Only cache it if it successfully finished without errors
@@ -142,7 +147,10 @@ export class CacheService {
         }
       },
       cancel(reason) {
-         stream.cancel(reason);
+         if (currentReader) {
+            currentReader.cancel(reason).catch(() => {});
+            currentReader = null;
+         }
          streamFailed = true; // prevent partial caching
       }
     });

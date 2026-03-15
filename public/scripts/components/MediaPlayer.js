@@ -22,6 +22,7 @@ class MediaPlayer {
     this.fileList = [];
     this.currentIndex = -1;
     this.focusTrap = null;
+    this.isClosing = false;
 
     this.init();
   }
@@ -150,7 +151,7 @@ class MediaPlayer {
     // Create video element
     const video = document.createElement('video');
     video.className = 'media-video';
-    video.preload = 'metadata';
+    video.preload = 'none'; // Prevent browser from pre-fetching data automatically
     video.id = 'custom-video-player';
 
     const source = document.createElement('source');
@@ -260,10 +261,11 @@ class MediaPlayer {
     // Initialize custom controls
     this.initializeVideoControls(video);
 
-    // Auto-play
-    video.play().catch(err => {
-      console.log('Autoplay prevented:', err);
-    });
+    // Show the play overlay by default since we disabled auto-play
+    const playOverlay = document.getElementById('play-overlay');
+    if (playOverlay) {
+      playOverlay.style.display = 'flex';
+    }
   }
 
   /**
@@ -530,9 +532,23 @@ class MediaPlayer {
 
     // Error handling
     video.addEventListener('error', (e) => {
-      console.error('Video playback error:', e);
+      const error = video.error;
+      let errorMsg = 'Failed to load video';
+      
+      if (error) {
+        switch (error.code) {
+          case 1: errorMsg = 'Playback aborted by user'; break;
+          case 2: errorMsg = 'Network error during playback'; break;
+          case 3: errorMsg = 'Video decoding failed (possibly unsupported codec)'; break;
+          case 4: errorMsg = 'Video format or MIME type not supported'; break;
+        }
+        console.error('Video error:', error.code, error.message, errorMsg);
+      }
+      
       loadingSpinner.style.display = 'none';
-      this.showError('Failed to load video. Please try again.');
+      if (!this.isClosing) {
+        this.showError(`${errorMsg}. Please try another file or browser.`);
+      }
     });
   }
 
@@ -727,6 +743,7 @@ class MediaPlayer {
    * Open media player modal
    */
   open() {
+    this.isClosing = false;
     this.container.classList.add('active');
     this.container.classList.add('opening');
     document.body.style.overflow = 'hidden';
@@ -744,6 +761,7 @@ class MediaPlayer {
    * Close media player modal
    */
   close() {
+    this.isClosing = true;
     this.container.classList.add('closing');
 
     // Stop video playback if playing

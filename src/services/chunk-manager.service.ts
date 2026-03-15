@@ -1,5 +1,5 @@
 // Chunk manager for handling large file uploads/downloads
-import { ChunkRepository } from '../repositories/chunk.repository.js';
+import { ChunkRepository, type ChunkedFileRecord } from '../repositories/chunk.repository.js';
 import { AccountRepository } from '../repositories/account.repository.js';
 import { FileRepository } from '../repositories/file.repository.js';
 import { AccountSelector } from './account-selector.service.js';
@@ -197,40 +197,44 @@ export class ChunkManager {
 
     const startChunk = rangeStart ? Math.floor(rangeStart / fileRecord.chunkSize) : 0;
     const maxChunks = fileRecord.chunks.length;
-    
-    // Calculate endChunk. rangeEnd is inclusive.
     const endChunk = rangeEnd 
       ? Math.min(Math.floor(rangeEnd / fileRecord.chunkSize), maxChunks - 1) 
       : maxChunks - 1;
 
     logger.debug({ fileId, startChunk, endChunk, rangeStart, rangeEnd }, 'Downloading chunk range');
 
-    return this.createChunkStream(fileRecord, startChunk, endChunk, rangeStart, rangeEnd);
+    const abortController = new AbortController();
+    const signal = abortController.signal;
+
+    return this.createChunkStream(fileRecord, startChunk, endChunk, abortController, rangeStart, rangeEnd);
   }
 
   private createChunkStream(
-    fileRecord: any,
+    fileRecord: ChunkedFileRecord,
     startChunk: number,
     endChunk: number,
+    abortController: AbortController,
     rangeStart?: number,
     rangeEnd?: number
   ): ReadableStream {
+    const signal = abortController.signal;
     let currentChunk = startChunk;
-    const PREFETCH_COUNT = 2; // Number of chunks to prefetch ahead
+    const PREFETCH_COUNT = 1; // Reduced from 2 to prevent overwhelming providers
 
     // Helper: download and decrypt a single chunk (streamed and cached on-the-fly)
     const fetchChunkStream = async (chunkIndex: number): Promise<ReadableStream> => {
-      const cacheKey = `chunk:stream:${fileRecord.id}:${chunkIndex}`;
+      if (signal.aborted) throw new Error('Stream aborted');
+      const cacheKey = `chunk:stream:${fileRecord.fileId}:${chunkIndex}`;
 
       // Try Redis Stream Cache first
       const cachedStream = await this.cacheService.getStream(cacheKey);
       if (cachedStream) {
-        logger.debug({ fileId: fileRecord.id, chunkIndex }, 'Chunk stream served from Redis cache');
+        logger.debug({ fileId: fileRecord.fileId, chunkIndex }, 'Chunk stream served from Redis cache');
         return cachedStream;
       }
 
       // Cache miss — download from cloud
-      logger.debug({ fileId: fileRecord.id, chunkIndex }, 'Chunk stream cache miss, downloading from cloud');
+      logger.debug({ fileId: fileRecord.fileId, chunkIndex }, 'Chunk stream cache miss, downloading from cloud');
 
       const chunk = fileRecord.chunks[chunkIndex];
       const provider = this.providerFactory.getProvider(chunk.providerType);
@@ -241,37 +245,33 @@ export class ChunkManager {
       }
 
       // 1. Get encrypted stream from provider
-      const encryptedStream = await provider.downloadFile(account, chunk.providerFileId);
+      // Use concurrency limiter to avoid spawning too many rclone processes at once
+      const getEncryptedStream = async () => {
+        return await this.concurrencyLimiter.run(async () => {
+          if (signal.aborted) throw new Error('Stream aborted');
+          return await provider.downloadFile(account, chunk.providerFileId);
+        });
+      };
 
-      // Actually, since chunk-manager previously used `decryptChunk` which requires a full buffer:
-      // Let's read the chunk entirely, decrypt it, and THEN proxy the buffer as a stream 
-      // into the cache stream wrapper to at least cache it moving forward.
-      const reader = encryptedStream.getReader();
-      const parts: Uint8Array[] = [];
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        parts.push(value);
+      const encryptedStream = await getEncryptedStream();
+      if (signal.aborted) {
+        encryptedStream.cancel().catch(() => {});
+        throw new Error('Stream aborted');
       }
 
-      const encryptedData = Buffer.concat(parts);
-      const decryptedData = await this.encryptionService.decryptChunk(
-        encryptedData,
-        fileRecord.encryptionKey,
-        fileRecord.iv,
-        chunkIndex
-      );
+      // 2. Wrap it with streaming decryption
+      let decryptedStream = encryptedStream;
+      if (fileRecord.encryptionKey && fileRecord.iv) {
+        decryptedStream = await this.encryptionService.decryptChunkStream(
+          encryptedStream,
+          fileRecord.encryptionKey,
+          fileRecord.iv,
+          chunkIndex
+        );
+      }
 
-      // Create a readable stream from the decrypted buffer
-      const bufferStream = new ReadableStream({
-        start(controller) {
-          controller.enqueue(new Uint8Array(decryptedData));
-          controller.close();
-        }
-      });
-
-      // Wrap it in cache proxy so it gets saved to Redis memory automatically
-      return this.cacheService.cacheStream(cacheKey, bufferStream, this.chunkCacheTTL);
+      // 3. Wrap it in cache proxy so it gets saved to Redis memory automatically as it flows
+      return this.cacheService.cacheStream(cacheKey, decryptedStream, this.chunkCacheTTL);
     };
 
     const prefetchPromises: Map<number, Promise<ReadableStream>> = new Map();
@@ -326,6 +326,7 @@ export class ChunkManager {
 
             if (done) {
               // Current chunk finished, move to next
+              logger.debug({ fileId: fileRecord.fileId, currentChunk, nextChunk: currentChunk + 1 }, 'Chunk finished, advancing reader');
               currentReader.releaseLock();
               currentReader = null;
               currentChunk++;
@@ -335,6 +336,14 @@ export class ChunkManager {
               const chunkStartPos = absolutePos;
               const chunkEndPos = absolutePos + value.length;
               absolutePos = chunkEndPos;
+
+              logger.trace({ 
+                fileId: fileRecord.fileId, 
+                currentChunk, 
+                chunkStartPos, 
+                chunkEndPos, 
+                len: value.length 
+              }, 'Processing decrypted slice');
 
               const start = rangeStart !== undefined ? rangeStart : 0;
               const end = rangeEnd !== undefined ? rangeEnd : Infinity;
@@ -355,14 +364,29 @@ export class ChunkManager {
           }
         } catch (error) {
           logger.error({ error, chunkIndex: currentChunk }, 'Chunk stream download failed');
-          if (currentReader) currentReader.releaseLock();
+          if (currentReader) {
+            currentReader.cancel().catch(() => {});
+            currentReader = null;
+          }
           controller.error(error);
         }
       },
       cancel(reason) {
+        logger.info({ fileId: fileRecord.fileId }, 'Main stream canceled, cleaning up resources');
+        abortController.abort(reason);
+
         if (currentReader) {
-          currentReader.cancel(reason);
+          currentReader.cancel(reason).catch(() => {});
+          currentReader = null;
         }
+        
+        // Also cancel all prefetch promises to kill their rclone processes
+        for (const [index, promise] of prefetchPromises.entries()) {
+          promise.then(stream => {
+            stream.cancel(reason).catch(() => {});
+          }).catch(() => {});
+        }
+        prefetchPromises.clear();
       }
     });
   }

@@ -110,45 +110,95 @@ export class FileEncryptionService {
     chunkIndex: number
   ): Promise<Buffer> {
     try {
-      logger.debug({ 
-        chunkIndex, 
-        encryptedSize: encryptedChunk.length,
-        keyLength: encryptionKey.length,
-        ivLength: iv.length 
-      }, 'Starting chunk decryption');
-      
       const fileKey = await this.decryptKey(Buffer.from(encryptionKey, 'base64'));
       const ivBuffer = Buffer.from(iv, 'base64');
       
-      // Adjust IV for chunk position (CTR mode style)
       const chunkIv = this.adjustIvForChunk(ivBuffer, chunkIndex);
-      
       const decipher = crypto.createDecipheriv(this.algorithm, fileKey, chunkIv) as crypto.DecipherGCM;
       
-      // Extract auth tag (last 16 bytes)
       if (encryptedChunk.length < 16) {
-        throw new Error(`Encrypted chunk too small: ${encryptedChunk.length} bytes, need at least 16 for auth tag`);
+        throw new Error(`Encrypted chunk too small: ${encryptedChunk.length} bytes`);
       }
       
       const authTag = encryptedChunk.slice(-16);
       const ciphertext = encryptedChunk.slice(0, -16);
       
-      logger.debug({ 
-        chunkIndex, 
-        ciphertextLength: ciphertext.length,
-        authTagLength: authTag.length 
-      }, 'Decryption parameters extracted');
-      
       decipher.setAuthTag(authTag);
-      
-      const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-      
-      logger.debug({ chunkIndex, decryptedSize: decrypted.length }, 'Chunk decryption successful');
-      
-      return decrypted;
+      return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
     } catch (error) {
-      logger.error({ error, chunkIndex, encryptedSize: encryptedChunk.length }, 'Chunk decryption failed');
+      logger.error({ error, chunkIndex }, 'Chunk decryption failed');
       throw new EncryptionError(`Failed to decrypt chunk ${chunkIndex}`);
+    }
+  }
+
+  async decryptChunkStream(
+    encryptedStream: ReadableStream,
+    encryptionKey: string,
+    iv: string,
+    chunkIndex: number
+  ): Promise<ReadableStream> {
+    try {
+      const fileKey = await this.decryptKey(Buffer.from(encryptionKey, 'base64'));
+      const ivBuffer = Buffer.from(iv, 'base64');
+      const chunkIv = this.adjustIvForChunk(ivBuffer, chunkIndex);
+      const decipher = crypto.createDecipheriv(this.algorithm, fileKey, chunkIv) as crypto.DecipherGCM;
+
+      let authTag: Buffer | null = null;
+      const authTagSize = 16;
+      let hasReceivedData = false;
+
+      return encryptedStream.pipeThrough(
+        new TransformStream({
+          transform: (chunk: Uint8Array, controller) => {
+            const buffer = Buffer.from(chunk);
+            if (buffer.length > 0) hasReceivedData = true;
+
+            if (buffer.length >= authTagSize) {
+              if (authTag) {
+                controller.enqueue(decipher.update(authTag));
+              }
+              authTag = buffer.slice(-authTagSize);
+              controller.enqueue(decipher.update(buffer.slice(0, -authTagSize)));
+            } else {
+              if (authTag) {
+                const combined = Buffer.concat([authTag, buffer]);
+                if (combined.length >= authTagSize) {
+                  authTag = combined.slice(-authTagSize);
+                  controller.enqueue(decipher.update(combined.slice(0, -authTagSize)));
+                } else {
+                  authTag = combined;
+                }
+              } else {
+                authTag = buffer;
+              }
+            }
+          },
+          flush: (controller) => {
+            if (!hasReceivedData) {
+              logger.warn({ chunkIndex }, 'Decryption stream closed without receiving any data');
+              return;
+            }
+
+            if (!authTag || authTag.length !== authTagSize) {
+              const error = new Error(`Stream truncated: missing or incomplete auth tag (received ${authTag?.length || 0}/16 bytes)`);
+              logger.error({ chunkIndex, authTagLength: authTag?.length }, error.message);
+              controller.error(error);
+              return;
+            }
+
+            try {
+              decipher.setAuthTag(authTag);
+              controller.enqueue(decipher.final());
+            } catch (err) {
+              logger.error({ err, chunkIndex }, 'Decryption failed: invalid authentication tag (data may be corrupted)');
+              controller.error(err);
+            }
+          },
+        })
+      );
+    } catch (error) {
+      logger.error({ error, chunkIndex }, 'Chunk stream decryption initialization failed');
+      throw new EncryptionError(`Failed to initialize chunk decryption for ${chunkIndex}`);
     }
   }
 
