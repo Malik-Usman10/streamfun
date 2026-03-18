@@ -46,6 +46,11 @@ export class DirectoryScanner {
   ) {}
 
   async start(): Promise<void> {
+    if (!appConfig.upload.autoScan) {
+      logger.info({ watchDir: WATCH_DIR }, 'Directory auto-scan is disabled. Watching and initial scan skipped.');
+      return;
+    }
+
     logger.info({ watchDir: WATCH_DIR }, 'Starting directory scanner');
 
     // Initial scan of existing files

@@ -46,6 +46,7 @@ export interface Config {
     maxFileSize: number;
     chunkSize: number;
     maxParallelChunks: number;
+    autoScan: boolean;
   };
   rateLimit: {
     window: number;
@@ -114,6 +115,7 @@ export const appConfig: Config = {
     maxFileSize: getEnvNumber('MAX_FILE_SIZE', 10737418240), // 10 GB
     chunkSize: getEnvNumber('CHUNK_SIZE', 10485760), // 10 MB
     maxParallelChunks: getEnvNumber('MAX_PARALLEL_CHUNKS', 3),
+    autoScan: getEnvBoolean('ENABLE_AUTO_SCAN', true),
   },
   rateLimit: {
     window: getEnvNumber('RATE_LIMIT_WINDOW', 60),
