@@ -99,61 +99,9 @@ router.register('search', (params) => {
 });
 
 router.register('videos', () => {
-  // Directly show all videos in a flat gallery instead of using categories
-  appRoot.innerHTML = `
-    <div class="gallery-container">
-      <header class="gallery-header">
-        <div class="gallery-header-content">
-          <div class="gallery-header-left">
-            <button class="back-button" id="back-to-home" aria-label="Back to home">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M19 12H5M12 19l-7-7 7-7"/>
-              </svg>
-            </button>
-            <div class="gallery-header-title">
-              <h1>Videos</h1>
-              <span class="file-count" id="file-count">All Videos</span>
-            </div>
-          </div>
-          <div class="gallery-header-actions">
-            <button class="header-action-btn" id="dashboard-button" aria-label="Open dashboard">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <rect x="3" y="3" width="7" height="7"></rect>
-                <rect x="14" y="3" width="7" height="7"></rect>
-                <rect x="14" y="14" width="7" height="7"></rect>
-                <rect x="3" y="14" width="7" height="7"></rect>
-              </svg>
-              <span>Dashboard</span>
-            </button>
-          </div>
-        </div>
-      </header>
-      <main class="gallery-main" id="gallery-main">
-        <div class="loading-state" id="loading-state">
-          <div class="spinner"></div>
-          <p>Loading videos...</p>
-        </div>
-        <div class="gallery-grid" id="gallery-grid" style="display: none;"></div>
-        <div class="empty-state" id="empty-state" style="display: none;">
-          <h2 id="empty-title">No videos yet</h2>
-          <p id="empty-description">Upload your first video to see it here</p>
-        </div>
-      </main>
-    </div>
-  `;
-
-  // Attach back button listener
-  document.getElementById('back-to-home')?.addEventListener('click', () => {
-    router.navigate('home');
-  });
-
-  const galleryMain = document.getElementById('gallery-main');
-  const gallery = new Gallery(galleryMain);
-
-  // Fetch all videos
-  loadFiles('videos');
-
-  return gallery;
+  const categoryView = new CategoryView(appRoot, 'videos');
+  categoryView.render();
+  return categoryView;
 });
 
 router.register('images', () => {

@@ -173,7 +173,7 @@ export class FileRepository {
     };
   }
 
-  async getCategories(fileType: 'image' | 'video'): Promise<Array<{ collectionName: string; count: number; thumbnail?: string }>> {
+  async getCategories(fileType: 'image' | 'video'): Promise<Array<{ name: string; count: number; thumbnail?: string }>> {
     const mimeTypePrefix = fileType === 'image' ? 'image/' : 'video/';
 
     const query = `
@@ -198,7 +198,7 @@ export class FileRepository {
     const result = await pool.query(query, [mimeTypePrefix + '%']);
 
     return result.rows.map(row => ({
-      collectionName: row.collection_name,
+      name: row.collection_name,
       count: parseInt(row.count, 10),
       thumbnail: row.thumbnail,
     }));

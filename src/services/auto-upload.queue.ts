@@ -2,8 +2,9 @@
 // Processes scan_jobs: reads files from disk, encrypts, chunks, and uploads to cloud storage
 import { Queue, Worker, type Job } from 'bullmq';
 import { createReadStream, statSync } from 'fs';
-import { access } from 'fs/promises';
+import { access, readdir } from 'fs/promises';
 import { constants } from 'fs';
+import { extname, join, dirname } from 'path';
 import { lookup as mimeTypeLookup } from 'mime-types';
 import { appConfig } from '../config/index.js';
 import { ScanJobRepository } from '../repositories/scan-job.repository.js';
@@ -170,11 +171,30 @@ export class AutoUploadQueue {
           const chunkSize = appConfig.upload.chunkSize;
           const totalChunks = Math.ceil(fileSize / chunkSize);
 
-          // Initialize chunked upload
+          // Determine collection name for videos: only if multiple videos in directory
           const isImage = mimeType.startsWith('image/');
-          const collectionName = isImage
-            ? (directoryName ?? filename.replace(/\.[^/.]+$/, ''))
-            : undefined;
+          let collectionName = undefined;
+
+          if (isImage) {
+            collectionName = directoryName ?? filename.replace(/\.[^/.]+$/, '');
+          } else if (mimeType.startsWith('video/') && directoryName) {
+            // Count video files in the same directory
+            try {
+              const parentPath = dirname(sourcePath);
+              const entries = await readdir(parentPath, { withFileTypes: true });
+              const videoExts = new Set(['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.ts', '.mpeg', '.mpg', '.3gp']);
+              
+              const videoCount = entries.filter(entry => 
+                entry.isFile() && videoExts.has(extname(entry.name).toLowerCase())
+              ).length;
+
+              if (videoCount > 1) {
+                collectionName = directoryName;
+              }
+            } catch (err) {
+              logger.warn({ err, sourcePath }, 'Failed to count videos in directory for auto-categorization');
+            }
+          }
 
           const fileId = await this.chunkManager.initializeChunkedUpload({
             filename,
