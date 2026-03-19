@@ -6,6 +6,7 @@ import { TokenManager } from './token-manager.service.js';
 import { BandwidthTracker } from './bandwidth-tracker.service.js';
 import { FileEncryptionService } from './file-encryption.service.js';
 import { CacheService } from './cache.service.js';
+import { ThumbnailService } from './thumbnail.service.js';
 import type { ChunkManager } from './chunk-manager.service.js';
 import type { FileRecord, ProviderType } from '../types/index.js';
 import type { FileUpload } from '../types/provider.js';
@@ -20,6 +21,7 @@ export class FileService {
     private tokenManager: TokenManager,
     private bandwidthTracker: BandwidthTracker,
     private encryptionService: FileEncryptionService,
+    private thumbnailService: ThumbnailService = new ThumbnailService(),
     private chunkManager?: ChunkManager,
     private cacheService: CacheService = new CacheService()
   ) {}
@@ -409,6 +411,65 @@ export class FileService {
     }
     
     return file;
+  }
+
+  async regenerateThumbnail(fileId: string): Promise<string> {
+    const file = await this.fileRepository.findById(fileId);
+    if (!file) {
+      throw new FileNotFoundError(fileId);
+    }
+
+    logger.info({ fileId, filename: file.filename }, 'Regenerating thumbnail');
+
+    let thumbnailData: string;
+
+    if (file.isChunked) {
+      if (!this.chunkManager) {
+        throw new Error('ChunkManager not available');
+      }
+
+      // Download first 5MB for thumbnail generation
+      const stream = await this.chunkManager.downloadFileInChunks(fileId, 0, 5 * 1024 * 1024);
+      const reader = stream.getReader();
+      const chunks: Uint8Array[] = [];
+      
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+      
+      const buffer = Buffer.concat(chunks);
+      thumbnailData = await this.thumbnailService.generateThumbnailFromBuffer(
+        buffer,
+        file.mimeType || 'video/mp4'
+      );
+    } else {
+      // For non-chunked files, download the whole thing (or range if provider supports)
+      const { stream } = await this.downloadFile(fileId);
+      const reader = stream.getReader();
+      const chunks: Uint8Array[] = [];
+      
+      // Limit to 10MB for safety if it's a huge single file
+      let totalSize = 0;
+      while (totalSize < 10 * 1024 * 1024) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        totalSize += value.length;
+      }
+      
+      const buffer = Buffer.concat(chunks);
+      thumbnailData = await this.thumbnailService.generateThumbnailFromBuffer(
+        buffer,
+        file.mimeType || 'video/mp4'
+      );
+    }
+
+    await this.fileRepository.update(fileId, { thumbnailData });
+    logger.info({ fileId }, 'Thumbnail regenerated successfully');
+    
+    return thumbnailData;
   }
 
   private delay(ms: number): Promise<void> {

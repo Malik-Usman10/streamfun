@@ -375,6 +375,24 @@ class Gallery {
       </svg>
     `;
 
+    const refreshThumbBtn = createElement('button', {
+      className: 'btn-icon',
+      'aria-label': `Refresh thumbnail for ${file.filename}`,
+      title: 'Refresh Thumbnail',
+      onClick: (e) => {
+        e.stopPropagation();
+        this.handleRefreshThumbnailClick(file, article);
+      }
+    });
+    refreshThumbBtn.innerHTML = `
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M23 4v6h-6"></path>
+        <path d="M1 20v-6h6"></path>
+        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+      </svg>
+    `;
+
+    itemActions.appendChild(refreshThumbBtn);
     itemActions.appendChild(downloadBtn);
     itemActions.appendChild(renameBtn);
     itemActions.appendChild(deleteBtn);
@@ -408,6 +426,47 @@ class Gallery {
       }
     } catch (error) {
       console.error('Rename error:', error);
+      window.showNotification(error.message, 'error');
+    }
+  }
+
+  /**
+   * Handle refresh thumbnail click
+   * @param {Object} file - File object
+   * @param {HTMLElement} article - The gallery item element
+   */
+  async handleRefreshThumbnailClick(file, article) {
+    try {
+      window.showNotification('Regenerating thumbnail...', 'info');
+      
+      // Import API dynamically
+      const { default: api } = await import('../api.js');
+      const result = await api.regenerateThumbnail(file.id);
+      
+      if (result.success && result.thumbnail) {
+        const img = article.querySelector('.thumbnail');
+        if (img) {
+          img.src = result.thumbnail;
+          img.dataset.src = result.thumbnail;
+          img.classList.add('loaded');
+          img.classList.remove('loading');
+        } else {
+          // If it was a placeholder, replace it
+          const wrapper = article.querySelector('.thumbnail-wrapper');
+          const placeholder = wrapper.querySelector('.thumbnail-placeholder');
+          if (placeholder) {
+            const newImg = createElement('img', {
+              className: 'thumbnail loaded',
+              alt: `${escapeHtml(file.filename)} thumbnail`,
+              src: result.thumbnail
+            });
+            placeholder.replaceWith(newImg);
+          }
+        }
+        window.showNotification('Thumbnail updated', 'success');
+      }
+    } catch (error) {
+      console.error('Refresh thumbnail error:', error);
       window.showNotification(error.message, 'error');
     }
   }

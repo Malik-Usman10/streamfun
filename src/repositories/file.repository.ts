@@ -178,20 +178,20 @@ export class FileRepository {
 
     const query = `
       SELECT 
-        COALESCE(collection_name, 'Uncategorized') as collection_name,
+        collection_name,
         COUNT(*) as count,
         (
           SELECT thumbnail_data 
           FROM files f2 
-          WHERE (f2.collection_name IS NOT DISTINCT FROM files.collection_name)
+          WHERE f2.collection_name = files.collection_name
             AND f2.mime_type LIKE $1 
             AND f2.thumbnail_data IS NOT NULL 
           ORDER BY RANDOM()
           LIMIT 1
         ) as thumbnail
       FROM files 
-      WHERE mime_type LIKE $1
-      GROUP BY files.collection_name 
+      WHERE mime_type LIKE $1 AND collection_name IS NOT NULL
+      GROUP BY collection_name 
       ORDER BY count DESC, collection_name ASC
     `;
 

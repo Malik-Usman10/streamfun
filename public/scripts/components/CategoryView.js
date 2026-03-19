@@ -12,7 +12,9 @@ class CategoryView {
     this.fileType = fileType; // 'images' or 'videos'
     this.currentCategory = null;
     this.gallery = null;
+    this.standaloneGallery = null;
     this.categories = [];
+    this.standaloneFiles = [];
   }
 
   /**
@@ -84,21 +86,33 @@ class CategoryView {
           <!-- Loading State -->
           <div class="loading-state" id="loading-state">
             <div class="spinner"></div>
-            <p>Loading categories...</p>
+            <p>Loading...</p>
           </div>
           
-          <!-- Categories Grid -->
-          <div class="categories-grid" id="categories-grid" style="display: none;">
-            <!-- Category items will be dynamically inserted here -->
-          </div>
+          <!-- Categories Section -->
+          <section id="categories-section" style="display: none;">
+            <div class="categories-grid" id="categories-grid">
+              <!-- Category items will be dynamically inserted here -->
+            </div>
+          </section>
+
+          <!-- Standalone Files Section -->
+          <section id="standalone-section" style="display: none; margin-top: 40px; padding-top: 20px; border-top: 1px solid var(--border-color);">
+            <h2 id="standalone-title" style="margin-bottom: 20px; font-size: 1.5rem; color: var(--text-color);">
+              ${this.fileType === 'images' ? 'Other Images' : 'Other Videos'}
+            </h2>
+            <div class="gallery-grid" id="standalone-grid">
+              <!-- Standalone items will be dynamically inserted here -->
+            </div>
+          </section>
           
           <!-- Empty State -->
           <div class="empty-state" id="empty-state" style="display: none;">
             <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
             </svg>
-            <h2 id="empty-title">No categories yet</h2>
-            <p id="empty-description">Upload your first ${this.fileType === 'images' ? 'images' : 'videos'} to create categories</p>
+            <h2 id="empty-title">No ${this.fileType === 'images' ? 'images' : 'videos'} yet</h2>
+            <p id="empty-description">Upload your first ${this.fileType === 'images' ? 'images' : 'videos'} to get started</p>
           </div>
         </main>
       </div>
@@ -181,52 +195,85 @@ class CategoryView {
    */
   async loadCategories() {
     try {
-      const response = await fetch(`/api/files/categories?type=${this.fileType === 'images' ? 'image' : 'video'}`);
+      const type = this.fileType === 'images' ? 'image' : 'video';
+      
+      // Import API dynamically
+      const { default: api } = await import('../api.js');
 
-      if (!response.ok) {
-        throw new Error('Failed to load categories');
-      }
+      // Fetch real categories and standalone files in parallel
+      const [categories, standaloneFiles] = await Promise.all([
+        api.fetchCategories(type),
+        api.fetchFiles({ type, category: 'Uncategorized' })
+      ]);
 
-      const data = await response.json();
-      this.categories = data.categories || [];
+      this.categories = categories || [];
+      this.standaloneFiles = standaloneFiles || [];
 
-      this.renderCategoriesGrid();
+      this.renderMixedGrid();
     } catch (error) {
-      console.error('Error loading categories:', error);
+      console.error('Error loading gallery data:', error);
       this.showEmptyState();
     }
   }
 
   /**
-   * Render the categories grid
+   * Render the mixed categories and standalone grid
    */
-  renderCategoriesGrid() {
+  async renderMixedGrid() {
     const loadingState = this.container.querySelector('#loading-state');
+    const categoriesSection = this.container.querySelector('#categories-section');
     const categoriesGrid = this.container.querySelector('#categories-grid');
+    const standaloneSection = this.container.querySelector('#standalone-section');
+    const standaloneGrid = this.container.querySelector('#standalone-grid');
     const emptyState = this.container.querySelector('#empty-state');
-    const categoryCount = this.container.querySelector('#category-count');
+    const categoryCountLabel = this.container.querySelector('#category-count');
 
     loadingState.style.display = 'none';
 
-    if (this.categories.length === 0) {
+    const hasCategories = this.categories.length > 0;
+    const hasStandalone = this.standaloneFiles.length > 0;
+
+    if (!hasCategories && !hasStandalone) {
       emptyState.style.display = 'flex';
-      categoriesGrid.style.display = 'none';
-      categoryCount.textContent = '0 categories';
+      categoriesSection.style.display = 'none';
+      standaloneSection.style.display = 'none';
+      categoryCountLabel.textContent = `0 ${this.fileType}`;
       return;
     }
 
     emptyState.style.display = 'none';
-    categoriesGrid.style.display = 'grid';
-    categoryCount.textContent = `${this.categories.length} categories`;
+    categoryCountLabel.textContent = `${this.categories.length} collections, ${this.standaloneFiles.length} individual`;
 
-    // Clear existing items
-    categoriesGrid.innerHTML = '';
+    // Render Categories
+    if (hasCategories) {
+      categoriesSection.style.display = 'block';
+      categoriesGrid.innerHTML = '';
+      this.categories.forEach(category => {
+        const item = this.createCategoryItem(category);
+        categoriesGrid.appendChild(item);
+      });
+    } else {
+      categoriesSection.style.display = 'none';
+    }
 
-    // Render each category
-    this.categories.forEach(category => {
-      const categoryItem = this.createCategoryItem(category);
-      categoriesGrid.appendChild(categoryItem);
-    });
+    // Render Standalone Files
+    if (hasStandalone) {
+      standaloneSection.style.display = 'block';
+      standaloneGrid.innerHTML = '';
+      
+      // Initialize a Gallery component for standalone files if not already done
+      if (!this.standaloneGallery) {
+        this.standaloneGallery = new Gallery(standaloneSection);
+      }
+      
+      // Manually render standalone items using Gallery's item creation for consistency
+      this.standaloneFiles.forEach((file, index) => {
+        const item = this.standaloneGallery.createGalleryItem(file, index);
+        standaloneGrid.appendChild(item);
+      });
+    } else {
+      standaloneSection.style.display = 'none';
+    }
   }
 
   /**

@@ -173,6 +173,17 @@ const api = {
   },
 
   /**
+   * Regenerate thumbnail for a file
+   * @param {string} fileId - File ID
+   * @returns {Promise<Object>} Result with new thumbnail data
+   */
+  async regenerateThumbnail(fileId) {
+    return await apiCall(`${API_BASE}/files/${fileId}/thumbnail`, {
+      method: 'POST'
+    });
+  },
+
+  /**
    * Upload file using chunked upload
    * @param {File} file - File to upload
    * @param {Object} options - Upload options

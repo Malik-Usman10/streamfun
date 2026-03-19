@@ -151,7 +151,7 @@ export function createFileRoutes(fileService: FileService, streamService: Stream
 
       res.json({
         categories: categories.map(cat => ({
-          name: cat.collectionName || 'Uncategorized',
+          name: cat.name,
           count: cat.count,
           fileType,
           thumbnail: cat.thumbnail,
@@ -444,6 +444,21 @@ export function createFileRoutes(fileService: FileService, streamService: Stream
       await fileService.deleteFile(id);
 
       res.json({ success: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Regenerate thumbnail for a file
+  router.post('/:id/thumbnail', async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      const thumbnailData = await fileService.regenerateThumbnail(id);
+      
+      res.json({
+        success: true,
+        thumbnail: thumbnailData
+      });
     } catch (error) {
       next(error);
     }
