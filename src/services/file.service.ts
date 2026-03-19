@@ -21,8 +21,8 @@ export class FileService {
     private tokenManager: TokenManager,
     private bandwidthTracker: BandwidthTracker,
     private encryptionService: FileEncryptionService,
-    private thumbnailService: ThumbnailService = new ThumbnailService(),
     private chunkManager?: ChunkManager,
+    private thumbnailService: ThumbnailService = new ThumbnailService(),
     private cacheService: CacheService = new CacheService()
   ) {}
 
@@ -428,8 +428,8 @@ export class FileService {
         throw new Error('ChunkManager not available');
       }
 
-      // Download first 5MB for thumbnail generation
-      const stream = await this.chunkManager.downloadFileInChunks(fileId, 0, 5 * 1024 * 1024);
+      // Download first 10MB for thumbnail generation
+      const stream = await this.chunkManager.downloadFileInChunks(fileId, 0, 10 * 1024 * 1024);
       const reader = stream.getReader();
       const chunks: Uint8Array[] = [];
       

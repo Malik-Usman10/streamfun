@@ -8,8 +8,12 @@ import { formatBytes, formatDate, escapeHtml } from '../utils/format.js';
 import { createElement } from '../utils/dom.js';
 
 class Gallery {
-  constructor(container) {
+  constructor(container, options = {}) {
     this.container = container;
+    this.options = {
+      subscribe: true,
+      ...options
+    };
     this.elements = {
       loadingState: null,
       galleryGrid: null,
@@ -29,8 +33,10 @@ class Gallery {
   init() {
     this.cacheElements();
     this.setupLazyLoading();
-    this.subscribeToState();
-    this.render();
+    if (this.options.subscribe) {
+      this.subscribeToState();
+      this.render();
+    }
   }
 
   /**
@@ -163,9 +169,9 @@ class Gallery {
    * @param {Array} files - Array of file objects
    */
   renderGallery(files) {
-    this.elements.loadingState.style.display = 'none';
-    this.elements.galleryGrid.style.display = 'grid';
-    this.elements.emptyState.style.display = 'none';
+    if (this.elements.loadingState) this.elements.loadingState.style.display = 'none';
+    if (this.elements.galleryGrid) this.elements.galleryGrid.style.display = 'grid';
+    if (this.elements.emptyState) this.elements.emptyState.style.display = 'none';
 
     // If we're not loading more, and files length is smaller than our rendered set, it's a fresh load/delete
     const state = appState.getState();

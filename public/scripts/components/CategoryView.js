@@ -104,6 +104,9 @@ class CategoryView {
             <div class="gallery-grid" id="standalone-grid">
               <!-- Standalone items will be dynamically inserted here -->
             </div>
+            <!-- Dummy elements for Gallery component compatibility -->
+            <div class="loading-state" style="display: none;"></div>
+            <div class="empty-state" style="display: none;"></div>
           </section>
           
           <!-- Empty State -->
@@ -263,7 +266,7 @@ class CategoryView {
       
       // Initialize a Gallery component for standalone files if not already done
       if (!this.standaloneGallery) {
-        this.standaloneGallery = new Gallery(standaloneSection);
+        this.standaloneGallery = new Gallery(standaloneSection, { subscribe: false });
       }
       
       // Manually render standalone items using Gallery's item creation for consistency

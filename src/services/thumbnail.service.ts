@@ -167,7 +167,11 @@ export class ThumbnailService {
         
         try {
           await writeFile(tempInputPath, buffer);
-          const thumbnail = await this.generateVideoThumbnail(tempInputPath, options);
+          // For buffers (which are often partial files), default to timestamp 0 to ensure we get a frame
+          const thumbnail = await this.generateVideoThumbnail(tempInputPath, {
+            ...options,
+            timestamp: options.timestamp ?? 0
+          });
           await unlink(tempInputPath);
           return thumbnail;
         } catch (error) {

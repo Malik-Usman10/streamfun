@@ -123,9 +123,15 @@ export function createRcloneRoutes(accountService: AccountService): Router {
     // NOTE: Blomp (Swift) does NOT require password obscuring - it uses plain text
     if (providerType === 'koofr' && rcloneConfig.password) {
       processedConfig.password = await rcloneConfigService.encryptField(rcloneConfig.password);
-    } else if (providerType === 'filen' && rcloneConfig.password) {
-      processedConfig.password = await rcloneConfigService.encryptField(rcloneConfig.password);
-    } else if (providerType === 'webdav' && rcloneConfig.pass) {
+    } else if (providerType === 'filen') {
+      if (rcloneConfig.password) {
+        processedConfig.password = await rcloneConfigService.encryptField(rcloneConfig.password);
+      }
+      if (rcloneConfig.api_key) {
+        processedConfig.api_key = await rcloneConfigService.encryptField(rcloneConfig.api_key);
+      }
+    }
+ else if (providerType === 'webdav' && rcloneConfig.pass) {
       processedConfig.pass = await rcloneConfigService.encryptField(rcloneConfig.pass);
     }
 
@@ -581,9 +587,15 @@ router.post('/remotes/:remoteName/validate', async (req: Request, res: Response)
     // NOTE: Blomp (Swift) does NOT require password obscuring - it uses plain text
     if (providerType === 'koofr' && configWithoutPath.password) {
       processedConfig.password = await rcloneConfigService.encryptField(configWithoutPath.password);
-    } else if (providerType === 'filen' && configWithoutPath.password) {
-      processedConfig.password = await rcloneConfigService.encryptField(configWithoutPath.password);
-    } else if (providerType === 'webdav' && configWithoutPath.pass) {
+    } else if (providerType === 'filen') {
+      if (configWithoutPath.password) {
+        processedConfig.password = await rcloneConfigService.encryptField(configWithoutPath.password);
+      }
+      if (configWithoutPath.api_key) {
+        processedConfig.api_key = await rcloneConfigService.encryptField(configWithoutPath.api_key);
+      }
+    }
+ else if (providerType === 'webdav' && configWithoutPath.pass) {
       processedConfig.pass = await rcloneConfigService.encryptField(configWithoutPath.pass);
     }
 

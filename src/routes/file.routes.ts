@@ -196,7 +196,11 @@ export function createFileRoutes(fileService: FileService, streamService: Stream
             try {
               const link = await streamService.generateStreamingLink(f.id);
               streamingUrl = link.url;
-              thumbnailUrl = link.url; // For images, use same URL as thumbnail
+              
+              // Only use streaming link as thumbnail for images
+              if (f.mimeType.startsWith('image/')) {
+                thumbnailUrl = link.url;
+              }
             } catch (error) {
               logger.warn({ fileId: f.id, error }, 'Failed to generate streaming link for gallery item');
             }
