@@ -75,10 +75,22 @@ export class AutoUploadQueue {
 
   /** Re-enqueue jobs that were interrupted (status=uploading on startup) OR were never enqueued (status=pending) */
   async recoverInterrupted(): Promise<void> {
+    // First, drain all non-active BullMQ jobs from the queue.
+    // This ensures stale jobs (e.g., from a previous code version with timestamp-based IDs)
+    // are cleaned up before we re-enqueue with the new stable IDs.
+    await this.drainStaleJobs();
+
     const interrupted = await this.scanJobRepo.findByStatus('uploading');
     const pending = await this.scanJobRepo.findByStatus('pending');
+    const skipped = await this.scanJobRepo.findByStatus('skipped');
     
-    const jobsToRecover = [...interrupted, ...pending];
+    // Reset skipped jobs back to pending — they may have been incorrectly skipped
+    // by a stale worker on another node or due to a transient access issue
+    for (const job of skipped) {
+      await this.scanJobRepo.resetForRetry(job.id);
+    }
+
+    const jobsToRecover = [...interrupted, ...pending, ...skipped];
     if (jobsToRecover.length === 0) return;
 
     logger.info({ count: jobsToRecover.length, uploading: interrupted.length, pending: pending.length }, 'Recovering auto-upload jobs');
@@ -97,6 +109,25 @@ export class AutoUploadQueue {
         mimeType: job.mimeType ?? 'application/octet-stream',
         directoryName: job.directoryName ?? undefined,
       });
+    }
+  }
+
+  /** Remove all non-active BullMQ jobs so we can re-enqueue with stable IDs */
+  private async drainStaleJobs(): Promise<void> {
+    try {
+      const states: Array<'waiting' | 'completed' | 'failed' | 'delayed'> = ['waiting', 'completed', 'failed', 'delayed'];
+      let removed = 0;
+      for (const state of states) {
+        const jobs = await this.queue.getJobs([state]);
+        for (const job of jobs) {
+          try { await job.remove(); removed++; } catch { /* job may have been picked up */ }
+        }
+      }
+      if (removed > 0) {
+        logger.info({ removed }, 'Drained stale BullMQ jobs on startup');
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Failed to drain stale BullMQ jobs (non-fatal)');
     }
   }
 
