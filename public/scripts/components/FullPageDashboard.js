@@ -1028,6 +1028,10 @@ class FullPageDashboard {
             <div style="color:var(--text-secondary);font-size:0.85rem;margin-top:0.25rem;">Uploading</div>
           </div>
           <div class="card" style="padding:1.25rem;text-align:center;">
+            <div style="font-size:2rem;font-weight:700;color:var(--color-warning, #fbbf24);" id="au-stat-verifying">—</div>
+            <div style="color:var(--text-secondary);font-size:0.85rem;margin-top:0.25rem;">Verifying</div>
+          </div>
+          <div class="card" style="padding:1.25rem;text-align:center;">
             <div style="font-size:2rem;font-weight:700;color:var(--color-success, #4ade80);" id="au-stat-completed">—</div>
             <div style="color:var(--text-secondary);font-size:0.85rem;margin-top:0.25rem;">Completed</div>
           </div>
@@ -1106,11 +1110,12 @@ class FullPageDashboard {
       const set = (id, val) => { const el = content.querySelector(id); if (el) el.textContent = val ?? '0'; };
       set('#au-stat-pending', stats.pending);
       set('#au-stat-uploading', stats.uploading);
+      set('#au-stat-verifying', stats.verifying);
       set('#au-stat-completed', stats.completed);
       set('#au-stat-failed', stats.failed);
 
-      // Active list (pending + uploading)
-      const active = jobs.filter(j => j.status === 'pending' || j.status === 'uploading');
+      // Active list (pending + uploading + verifying)
+      const active = jobs.filter(j => j.status === 'pending' || j.status === 'uploading' || j.status === 'verifying');
       const activeEl = content.querySelector('#au-active-list');
       if (activeEl) {
         if (active.length === 0) {
@@ -1126,7 +1131,7 @@ class FullPageDashboard {
                 <div style="height:100%;width:${j.progress}%;background:var(--color-primary);border-radius:99px;transition:width 0.5s;"></div>
               </div>
               <div style="display:flex;justify-content:space-between;margin-top:0.3rem;">
-                <span style="font-size:0.75rem;color:var(--text-secondary);">${j.status === 'uploading' ? '⬆ Uploading' : (j.providerType ? '🔄 Initializing...' : '⏳ Queued')} · ${j.providerType ?? '—'}</span>
+                <span style="font-size:0.75rem;color:var(--text-secondary);">${j.status === 'verifying' ? '🔍 Verifying...' : (j.status === 'uploading' ? '⬆ Uploading' : (j.providerType ? '🔄 Initializing...' : '⏳ Queued'))} · ${j.providerType ?? '—'}</span>
                 <span style="font-size:0.75rem;color:var(--color-primary);">${j.progress}%</span>
               </div>
               ${j.status === 'pending' ? `

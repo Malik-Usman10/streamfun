@@ -2,7 +2,7 @@
 import { pool } from '../database/connection.js';
 import logger from '../utils/logger.js';
 
-export type ScanJobStatus = 'pending' | 'uploading' | 'completed' | 'failed' | 'skipped';
+export type ScanJobStatus = 'pending' | 'uploading' | 'completed' | 'failed' | 'skipped' | 'verifying';
 
 export interface ScanJob {
   id: string;
@@ -27,6 +27,7 @@ export interface ScanJob {
 export interface ScanJobStats {
   pending: number;
   uploading: number;
+  verifying: number;
   completed: number;
   failed: number;
   skipped: number;
@@ -120,10 +121,10 @@ export class ScanJobRepository {
     const result = await pool.query(
       `SELECT status, COUNT(*)::int AS count FROM scan_jobs GROUP BY status`
     );
-    const stats: ScanJobStats = { pending: 0, uploading: 0, completed: 0, failed: 0, skipped: 0, total: 0 };
+    const stats: ScanJobStats = { pending: 0, uploading: 0, verifying: 0, completed: 0, failed: 0, skipped: 0, total: 0 };
     for (const row of result.rows) {
       const key = row.status as ScanJobStatus;
-      if (key in stats) stats[key] = row.count;
+      if (key in stats) (stats as any)[key] = row.count;
       stats.total += row.count;
     }
     return stats;

@@ -16,6 +16,7 @@ import type { ProviderType } from '../types/index.js';
 import logger from '../utils/logger.js';
 
 const QUEUE_NAME = 'auto-upload';
+const INTEGRITY_QUEUE_NAME = 'auto-upload-integrity';
 
 export interface AutoUploadJobData {
   scanJobId: string;
@@ -24,6 +25,13 @@ export interface AutoUploadJobData {
   fileSize: number;
   mimeType: string;
   directoryName?: string;
+  isRecovery?: boolean;
+}
+
+export interface IntegrityJobData {
+  fileId: string;
+  scanJobId: string;
+  filename: string;
 }
 
 const redisConnection = {
@@ -34,7 +42,9 @@ const redisConnection = {
 
 export class AutoUploadQueue {
   private queue: Queue<AutoUploadJobData>;
+  private integrityQueue: Queue<IntegrityJobData>;
   private worker: Worker<AutoUploadJobData> | null = null;
+  private integrityWorker: Worker<IntegrityJobData> | null = null;
 
   constructor(
     private scanJobRepo: ScanJobRepository,
@@ -53,10 +63,21 @@ export class AutoUploadQueue {
         removeOnFail: false,
       },
     });
+
+    this.integrityQueue = new Queue<IntegrityJobData>(INTEGRITY_QUEUE_NAME, {
+      connection: redisConnection,
+      defaultJobOptions: {
+        attempts: 2,
+        backoff: { type: 'fixed', delay: 10_000 },
+        removeOnComplete: { count: 50 },
+        removeOnFail: false,
+      },
+    });
   }
 
   async enqueue(data: AutoUploadJobData): Promise<void> {
     const jobId = `scan-${data.scanJobId}`;
+    const priority = data.isRecovery ? 1 : 10; // Recovered/Resumed jobs get higher priority (lower number)
 
     // Remove any previous completed/failed job with the same ID so rescan can re-enqueue
     const existingJob = await this.queue.getJob(jobId);
@@ -71,17 +92,41 @@ export class AutoUploadQueue {
       }
     }
 
-    await this.queue.add(`upload-${data.scanJobId}`, data, { jobId });
-    logger.info({ scanJobId: data.scanJobId, filename: data.filename }, 'Enqueued auto-upload job');
+    await this.queue.add(`upload-${data.scanJobId}`, data, { jobId, priority });
+    logger.info({ scanJobId: data.scanJobId, filename: data.filename, priority }, 'Enqueued auto-upload job');
+  }
+
+  /** Enqueue a file for integrity verification in the dedicated integrity queue */
+  async enqueueIntegrityCheck(data: IntegrityJobData): Promise<void> {
+    const jobId = `integrity-${data.scanJobId}`;
+    
+    // If it's already in the integrity queue, don't duplicate
+    const existing = await this.integrityQueue.getJob(jobId);
+    if (existing) {
+      const state = await existing.getState();
+      if (state !== 'completed' && state !== 'failed') return;
+      await existing.remove();
+    }
+
+    await this.integrityQueue.add(`verify-${data.scanJobId}`, data, { jobId, priority: 5 });
+    logger.debug({ scanJobId: data.scanJobId, filename: data.filename }, 'Enqueued integrity verification job');
   }
 
   /** Re-enqueue jobs that were interrupted (status=uploading on startup) OR were never enqueued (status=pending) */
   async recoverInterrupted(): Promise<void> {
-    // Background audit of recently completed jobs for integrity
+    // Audit recent jobs using the integrity queue instead of blocking startup
     if (this.integrityService) {
-      this.integrityService.auditRecentJobs(24).catch(err => {
-        logger.error({ err }, 'Startup integrity audit failed');
-      });
+      const recentJobs = await this.scanJobRepo.findRecentlyCompleted(24);
+      for (const job of recentJobs) {
+        if (job.fileId) {
+          await this.enqueueIntegrityCheck({
+            fileId: job.fileId,
+            scanJobId: job.id,
+            filename: job.filename
+          });
+        }
+      }
+      logger.info({ count: recentJobs.length }, 'Enqueued recent jobs for background integrity audit');
     }
 
     // First, drain all non-active BullMQ jobs from the queue.
@@ -117,6 +162,7 @@ export class AutoUploadQueue {
         fileSize: job.fileSize,
         mimeType: job.mimeType ?? 'application/octet-stream',
         directoryName: job.directoryName ?? undefined,
+        isRecovery: true // Highlight prioritized recovery
       });
     }
   }
@@ -141,32 +187,75 @@ export class AutoUploadQueue {
   }
 
   startWorker(): void {
+    // 1. Primary Upload Worker
     this.worker = new Worker<AutoUploadJobData>(
       QUEUE_NAME,
       async (job: Job<AutoUploadJobData>) => {
-        logger.info({ jobId: job.id, scanJobId: job.data.scanJobId, filename: job.data.filename }, 'AUTO-UPLOAD: Worker picking up job from queue');
+        logger.info({ jobId: job.id, scanJobId: job.data.scanJobId, filename: job.data.filename }, 'AUTO-UPLOAD: Worker picking up job');
         try {
           await this.processJob(job);
         } catch (err: any) {
-          logger.error({ jobId: job.id, scanJobId: job.data.scanJobId, error: err.message }, 'AUTO-UPLOAD: Worker job processing crashed');
+          logger.error({ jobId: job.id, scanJobId: job.data.scanJobId, error: err.message }, 'AUTO-UPLOAD: Worker processing crashed');
           throw err;
         }
       },
       {
         connection: redisConnection,
-        concurrency: appConfig.workers.enabled ? 2 : 1, // Ensure at least 1 worker if started
+        concurrency: appConfig.upload.uploadConcurrency,
       }
     );
 
-    this.worker.on('completed', (job) => {
-      logger.info({ jobId: job.id, scanJobId: job.data.scanJobId, filename: job.data.filename }, 'Auto-upload job completed successfully');
-    });
+    // 2. Integrity Audit Worker (Separate resource pool)
+    this.integrityWorker = new Worker<IntegrityJobData>(
+      INTEGRITY_QUEUE_NAME,
+      async (job: Job<IntegrityJobData>) => {
+        if (!this.integrityService) return;
+        const { fileId, scanJobId, filename } = job.data;
+        
+        try {
+          // Update status to 'verifying' so UI knows it's audited
+          await this.scanJobRepo.updateStatus(scanJobId, 'verifying');
+          
+          const result = await this.integrityService.checkFileIntegrity(fileId, true);
+          if (!result.valid) {
+            const errorMessage = `INTEGRITY_FAILURE: ${result.reason}`;
+            logger.warn({ scanJobId, filename, reason: result.reason }, 'Integrity audit found corruption');
+            
+            await this.scanJobRepo.markFailed(scanJobId, errorMessage);
+            await this.fileRepo.update(fileId, {
+              metadata: {
+                corrupted: true,
+                corruptionReason: result.reason,
+                corruptedAt: new Date().toISOString()
+              }
+            }).catch(() => {});
+          } else {
+            // Re-mark as completed if it passed (re-confirms health)
+            await this.scanJobRepo.markCompleted(scanJobId, fileId);
+          }
+        } catch (err: any) {
+          logger.error({ scanJobId, err: err.message }, 'Integrity worker failed');
+          throw err;
+        }
+      },
+      {
+        connection: redisConnection,
+        concurrency: appConfig.upload.integrityConcurrency,
+      }
+    );
 
     this.worker.on('failed', (job, err) => {
       logger.error({ jobId: job?.id, scanJobId: job?.data.scanJobId, filename: job?.data.filename, err: err.message }, 'Auto-upload job failed');
     });
 
-    logger.info('Auto-upload worker started');
+    this.integrityWorker.on('failed', (job, err) => {
+      logger.error({ jobId: job?.id, scanJobId: job?.data.scanJobId, err: err.message }, 'Integrity check job failed');
+    });
+
+    logger.info({ 
+      uploadConcurrency: appConfig.upload.uploadConcurrency, 
+      integrityConcurrency: appConfig.upload.integrityConcurrency 
+    }, 'Auto-upload workers started (Transfer + Integrity)');
   }
 
   private async processJob(job: Job<AutoUploadJobData>): Promise<void> {
@@ -316,29 +405,9 @@ export class AutoUploadQueue {
             this.accountService.refreshAccountQuota(selectedAccountId).catch(() => {});
           }
 
-          // INTEGRITY CHECK
+          // INTEGRITY CHECK (Offload to dedicated integrity queue)
           if (this.integrityService) {
-            logger.info({ fileId }, 'AUTO-UPLOAD: Performing post-upload integrity verification');
-            const integrity = await this.integrityService.checkFileIntegrity(fileId, true);
-            if (!integrity.valid) {
-              const errorMessage = `INTEGRITY_FAILURE: ${integrity.reason}`;
-              logger.error({ fileId, filename, reason: integrity.reason }, 'Post-upload integrity check failed');
-              
-              // Mark as failed instead of completed
-              await this.scanJobRepo.markFailed(scanJobId, errorMessage);
-              
-              // Mark file record as corrupted
-              await this.fileRepo.update(fileId, {
-                metadata: {
-                  corrupted: true,
-                  corruptionReason: integrity.reason,
-                  corruptedAt: new Date().toISOString()
-                }
-              }).catch(() => {});
-              
-              throw new Error(errorMessage); // Trigger outer fail handling
-            }
-            logger.info({ fileId, filename }, 'AUTO-UPLOAD: Integrity check passed successfully');
+            await this.enqueueIntegrityCheck({ fileId, scanJobId, filename });
           }
 
           uploadSuccess = true;

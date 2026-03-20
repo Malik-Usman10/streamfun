@@ -48,6 +48,8 @@ export interface Config {
     chunkSize: number;
     maxParallelChunks: number;
     autoScan: boolean;
+    uploadConcurrency: number;
+    integrityConcurrency: number;
   };
   rateLimit: {
     window: number;
@@ -118,6 +120,8 @@ export const appConfig: Config = {
     chunkSize: getEnvNumber('CHUNK_SIZE', 10485760), // 10 MB
     maxParallelChunks: getEnvNumber('MAX_PARALLEL_CHUNKS', 3),
     autoScan: getEnvBoolean('ENABLE_AUTO_SCAN', true),
+    uploadConcurrency: getEnvNumber('UPLOAD_CONCURRENCY', 2),
+    integrityConcurrency: getEnvNumber('INTEGRITY_CONCURRENCY', 5),
   },
   rateLimit: {
     window: getEnvNumber('RATE_LIMIT_WINDOW', 60),
