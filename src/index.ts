@@ -68,11 +68,23 @@ async function start() {
       const ctx = getAppContext();
       if (ctx) {
         try {
-          // Start BullMQ worker
-          ctx.queue.startWorker();
+          // Only start the BullMQ upload worker if auto-scan is enabled.
+          // This prevents dev/test instances (with ENABLE_AUTO_SCAN=false) from
+          // connecting to the shared Redis and stealing upload jobs they can't process.
+          if (appConfig.upload.autoScan) {
+            // Start BullMQ worker
+            ctx.queue.startWorker();
 
-          // Recover any interrupted uploads from before last restart
-          await ctx.queue.recoverInterrupted();
+            // Recover any interrupted uploads from before last restart
+            await ctx.queue.recoverInterrupted();
+
+            // Start watching /uploads directory
+            await ctx.scanner.start();
+
+            logger.info('Auto-upload system started successfully');
+          } else {
+            logger.info('Auto-scan disabled, skipping upload worker and directory watcher');
+          }
 
           // Performance: Initial quota sync for all accounts ONE TIME on startup
           logger.info('Syncing initial quotas for all accounts...');
@@ -80,14 +92,9 @@ async function start() {
             logger.error({ err }, 'Initial quota sync failed (non-fatal)');
           });
 
-          // Start watching /uploads directory
-          await ctx.scanner.start();
-
           // Initialize backup system
           ctx.backupQueue.startWorker();
           await ctx.backupQueue.updateSchedule();
-
-          logger.info('Auto-upload system started successfully');
         } catch (err) {
           logger.error({ err }, 'Failed to start auto-upload system (non-fatal)');
         }
