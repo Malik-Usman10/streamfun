@@ -23,6 +23,7 @@ export interface AutoUploadJobData {
   fileSize: number;
   mimeType: string;
   directoryName?: string;
+  nodeId?: string; // Node ID to prevent multiple servers from stealing each other's local files
 }
 
 const redisConnection = {
@@ -51,10 +52,14 @@ export class AutoUploadQueue {
         removeOnFail: false,
       },
     });
+    this.nodeId = require('os').hostname(); // Capture current node's hostname
   }
 
+  private nodeId: string;
+
   async enqueue(data: AutoUploadJobData): Promise<void> {
-    await this.queue.add(`upload-${data.scanJobId}`, data, {
+    const jobData = { ...data, nodeId: this.nodeId };
+    await this.queue.add(`upload-${data.scanJobId}`, jobData, {
       // Use scanJobId + timestamp to ensure we can re-enqueue even if Redis state is stale
       // while still being idempotent within a 1-second window during a single scan.
       jobId: `scan-${data.scanJobId}-${Math.floor(Date.now() / 1000)}`,
@@ -128,6 +133,16 @@ export class AutoUploadQueue {
       return;
     }
 
+    // Multi-node safety: prevent remote testing nodes from consuming local jobs 
+    if (job.data.nodeId && job.data.nodeId !== this.nodeId) {
+      logger.info({ scanJobId, jobNode: job.data.nodeId, currentNode: this.nodeId }, 'Job belongs to another node, skipping worker processing to prevent theft');
+      // We do NOT update the DB to 'skipped' because the other node SHOULD process it.
+      // However, since we consumed the job from BullMQ, the other node won't get it
+      // unless we put it back, or we throw an error (which triggers backoff).
+      // Since putting it back creates a loop, we throw an error so it delays/retries.
+      throw new Error(`Job belongs to node ${job.data.nodeId}, throwing so it retries`);
+    }
+
     // Check if file already exists in library (final check before starting)
     const exists = await this.fileRepo.existsByNameAndSize(filename, fileSize);
     if (exists && fullJob.status !== 'uploading' && fullJob.status !== 'pending') {
@@ -186,7 +201,7 @@ export class AutoUploadQueue {
           } else {
             // New upload logic
             await this.scanJobRepo.markUploading(scanJobId, providerType, selectedAccountId);
-            await this.scanJobRepo.updateProgress(scanJobId, 0, 'pending');
+            await this.scanJobRepo.updateProgress(scanJobId, 0, 'uploading');
 
             // Determine collection name for videos: only if multiple videos in directory
             const isImage = mimeType.startsWith('image/');
@@ -282,7 +297,8 @@ export class AutoUploadQueue {
 
     } catch (err: any) {
       // This catch handles selection failures or other logic errors
-      if (!job.failedReason) {
+      const isNodeMismatch = err?.message?.includes('Job belongs to node');
+      if (!job.failedReason && !isNodeMismatch) {
          const msg = err?.message ?? 'An unexpected error occurred during auto-upload';
          await this.scanJobRepo.markFailed(scanJobId, msg);
       }
