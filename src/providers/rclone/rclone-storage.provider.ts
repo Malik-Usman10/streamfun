@@ -192,18 +192,58 @@ export class RcloneStorageProvider implements IStorageProvider {
         start(controller) {
           let hasReceivedData = false;
           let stderrBuffer = '';
-          let streamErrored = false;
+          let streamClosed = false;    // Guards ALL controller ops
+          let stdoutEnded = false;     // stdout pipe finished
+          let processExitCode: number | null | undefined = undefined; // undefined = not yet exited
+
+          // Safe wrappers — Bun throws if you touch a closed controller
+          const safeEnqueue = (chunk: Uint8Array) => {
+            if (streamClosed) return;
+            try { controller.enqueue(chunk); } catch { streamClosed = true; }
+          };
+          const safeClose = () => {
+            if (streamClosed) return;
+            streamClosed = true;
+            try { controller.close(); } catch {}
+          };
+          const safeError = (err: Error) => {
+            if (streamClosed) return;
+            streamClosed = true;
+            try { controller.error(err); } catch {}
+          };
+
+          // Called when BOTH stdout has ended AND the process has closed.
+          // Only then do we know the full picture.
+          const maybeFinalize = () => {
+            if (!stdoutEnded || processExitCode === undefined) return; // Still waiting
+            if (streamClosed) return; // Already finalized
+
+            if (processExitCode !== 0) {
+              // Non-zero exit OR killed by signal (code === null)
+              const errorMessage = stderrBuffer.trim() || `Rclone cat exited with code ${processExitCode}`;
+              logger.error({ code: processExitCode, fileId, stderr: stderrBuffer }, 'Rclone cat process failed');
+              if (!hasReceivedData) {
+                safeError(new Error(`Download failed: ${errorMessage}`));
+              } else {
+                safeError(new Error(`Stream interrupted: ${errorMessage}`));
+              }
+            } else if (!hasReceivedData) {
+              logger.warn({ fileId }, 'Rclone cat returned no data (empty or missing file on provider)');
+              safeError(new Error(`Downloaded chunk is empty — file may be missing on provider: ${fileId}`));
+            } else {
+              safeClose();
+            }
+          };
 
           child.stdout.on('data', (chunk: Buffer) => {
             hasReceivedData = true;
-            if (!streamErrored && controller.desiredSize !== null) {
-              controller.enqueue(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
-            }
+            safeEnqueue(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
           });
 
-          // Don't close on stdout 'end' — wait for 'close' to check exit code first.
-          // This prevents the race where the stream closes "successfully" before
-          // we know rclone actually failed.
+          child.stdout.on('end', () => {
+            stdoutEnded = true;
+            maybeFinalize();
+          });
 
           child.stderr.on('data', (data: Buffer) => {
             const errorMsg = data.toString();
@@ -214,33 +254,13 @@ export class RcloneStorageProvider implements IStorageProvider {
           });
 
           child.on('error', (error: Error) => {
-            streamErrored = true;
             logger.error({ error, fileId }, 'Rclone process spawn failure');
-            try { controller.error(error); } catch {}
+            safeError(error);
           });
 
           child.on('close', (code: number | null) => {
-            if (streamErrored) return; // Already errored
-
-            if (code !== 0 && code !== null) {
-              const errorMessage = stderrBuffer.trim() || `Rclone cat exited with code ${code}`;
-              logger.error({ code, fileId, stderr: stderrBuffer }, 'Rclone cat process failed');
-              streamErrored = true;
-
-              if (!hasReceivedData) {
-                try { controller.error(new Error(`Download failed: ${errorMessage}`)); } catch {}
-              } else {
-                try { controller.error(new Error(`Stream interrupted: ${errorMessage}`)); } catch {}
-              }
-            } else if (!hasReceivedData) {
-              // Exit code 0 but no data — the file is empty or missing on the provider
-              logger.warn({ fileId }, 'Rclone cat returned no data (empty or missing file on provider)');
-              streamErrored = true;
-              try { controller.error(new Error(`Downloaded chunk is empty — file may be missing on provider: ${fileId}`)); } catch {}
-            } else {
-              // Success: close the stream now that we've confirmed exit code 0
-              try { controller.close(); } catch {}
-            }
+            processExitCode = code;
+            maybeFinalize();
           });
         },
         cancel() {

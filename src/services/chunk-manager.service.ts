@@ -295,9 +295,15 @@ export class ChunkManager {
       pull: async (controller) => {
         try {
           while (true) {
+            // If stream was canceled while we waited, bail out
+            if (signal.aborted) {
+              try { controller.close(); } catch {}
+              return;
+            }
+
             // Check if we are done with all chunks
             if (currentChunk > endChunk && !currentReader) {
-              controller.close();
+              try { controller.close(); } catch {}
               return;
             }
 
@@ -309,6 +315,14 @@ export class ChunkManager {
               }
 
               const chunkStream = await chunkPromise;
+
+              // Re-check abort after await — cancel() may have fired
+              if (signal.aborted) {
+                chunkStream?.cancel().catch(() => {});
+                try { controller.close(); } catch {}
+                return;
+              }
+
               prefetchPromises.delete(currentChunk);
               currentReader = chunkStream?.getReader() || null;
               
@@ -324,10 +338,23 @@ export class ChunkManager {
             // Read from current chunk
             const { done, value } = await currentReader.read();
 
+            // Re-check abort after await — cancel() may have nulled currentReader
+            if (signal.aborted) {
+              // currentReader may have been nulled by cancel(), safe-guard
+              if (currentReader) {
+                try { currentReader.releaseLock(); } catch {}
+                currentReader = null;
+              }
+              try { controller.close(); } catch {}
+              return;
+            }
+
             if (done) {
               // Current chunk finished, move to next
               logger.debug({ fileId: fileRecord.fileId, currentChunk, nextChunk: currentChunk + 1 }, 'Chunk finished, advancing reader');
-              currentReader.releaseLock();
+              if (currentReader) {
+                try { currentReader.releaseLock(); } catch {}
+              }
               currentReader = null;
               currentChunk++;
               // Loop continues to open next chunk
@@ -355,7 +382,7 @@ export class ChunkManager {
                 
                 if (sliceStart < sliceEnd) {
                   const slice = value.slice(sliceStart, sliceEnd);
-                  controller.enqueue(slice);
+                  try { controller.enqueue(slice); } catch {}
                   return; // End pull cycle after yielding data
                 }
               }
@@ -363,6 +390,12 @@ export class ChunkManager {
             }
           }
         } catch (error: any) {
+          // If aborted, just close cleanly — don't log as error
+          if (signal.aborted) {
+            try { controller.close(); } catch {}
+            return;
+          }
+
           logger.error({ error: error.message, chunkIndex: currentChunk, fileId: fileRecord.fileId }, 'Chunk stream download failed');
           
           // Mark file as corrupted if it's a provider-side missing/empty chunk error
@@ -379,10 +412,10 @@ export class ChunkManager {
           }
 
           if (currentReader) {
-            currentReader.cancel().catch(() => {});
+            try { currentReader.cancel(); } catch {}
             currentReader = null;
           }
-          controller.error(error);
+          try { controller.error(error); } catch {}
         }
       },
       cancel(reason) {
@@ -390,7 +423,7 @@ export class ChunkManager {
         abortController.abort(reason);
 
         if (currentReader) {
-          currentReader.cancel(reason).catch(() => {});
+          try { currentReader.cancel(reason); } catch {}
           currentReader = null;
         }
         
