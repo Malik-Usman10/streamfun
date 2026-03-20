@@ -2,7 +2,7 @@
 // Discovers videos and image galleries, creates scan_jobs, enqueues to BullMQ
 import { watch, type FSWatcher } from 'chokidar';
 import { stat, readdir } from 'fs/promises';
-import { basename, dirname, extname, join } from 'path';
+import { resolve, basename, dirname, extname, join } from 'path';
 import { lookup as mimeTypeLookup } from 'mime-types';
 import { ScanJobRepository } from '../repositories/scan-job.repository.js';
 import { FileRepository } from '../repositories/file.repository.js';
@@ -10,7 +10,8 @@ import { AutoUploadQueue } from './auto-upload.queue.js';
 import { appConfig } from '../config/index.js';
 import logger from '../utils/logger.js';
 
-const WATCH_DIR = process.env.UPLOAD_WATCH_DIR ?? '/uploads';
+const RAW_WATCH_DIR = process.env.UPLOAD_WATCH_DIR ?? '/uploads';
+const WATCH_DIR = resolve(RAW_WATCH_DIR);
 
 // File stabilisation: wait for file to stop being written before processing
 const STABILISE_WAIT_MS = 5000;
@@ -154,26 +155,50 @@ export class DirectoryScanner {
         return false;
       }
 
-      // Upsert returns null if path already tracked (UNIQUE constraint)
-      const job = await this.scanJobRepo.upsert({
-        sourcePath: filePath,
-        filename,
-        directoryName: directoryName ?? undefined,
-        fileSize: stats.size,
-        mimeType,
-      });
+      // Detect path mismatch (e.g. Host vs Docker transition)
+      const existingJobByFile = await this.scanJobRepo.findByFilenameAndSize(filename, stats.size);
+      let jobToProcess;
 
-      if (!job) {
-        // Already tracked — only re-enqueue if it was previously failed
-        const existing = await this.scanJobRepo.findBySourcePath(filePath);
-        if (existing && existing.status === 'failed') {
-          await this.scanJobRepo.resetForRetry(existing.id);
-          await this.enqueueJob({ ...existing, mimeType: existing.mimeType });
+      if (existingJobByFile) {
+        if (existingJobByFile.sourcePath !== filePath) {
+          logger.info({ oldPath: existingJobByFile.sourcePath, newPath: filePath }, 'File moved or path changed (Host/Docker transition), updating source_path');
+          await this.scanJobRepo.updateSourcePath(existingJobByFile.id, filePath);
+          existingJobByFile.sourcePath = filePath;
         }
-        return false;
+        jobToProcess = existingJobByFile;
+
+        // Don't re-enqueue if completed
+        if (jobToProcess.status === 'completed') {
+          return false;
+        }
+
+        // If it was failed OR skipped (e.g. erroneously skipped due to path errors), reset it.
+        if (jobToProcess.status === 'failed' || jobToProcess.status === 'skipped') {
+          await this.scanJobRepo.resetForRetry(jobToProcess.id);
+        }
+      } else {
+        // Upsert returns null if path already tracked (UNIQUE constraint)
+        const job = await this.scanJobRepo.upsert({
+          sourcePath: filePath,
+          filename,
+          directoryName: directoryName ?? undefined,
+          fileSize: stats.size,
+          mimeType,
+        });
+
+        if (!job) {
+          // Already tracked by path, handle appropriately
+          const existing = await this.scanJobRepo.findBySourcePath(filePath);
+          if (existing && existing.status === 'failed') {
+            await this.scanJobRepo.resetForRetry(existing.id);
+            await this.enqueueJob({ ...existing, mimeType: existing.mimeType });
+          }
+          return false;
+        }
+        jobToProcess = job;
       }
 
-      await this.enqueueJob(job);
+      await this.enqueueJob(jobToProcess);
       return true;
     } catch (err) {
       logger.error({ err, filePath }, 'Failed to process file');

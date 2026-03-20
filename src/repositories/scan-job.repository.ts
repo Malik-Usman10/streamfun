@@ -18,6 +18,7 @@ export interface ScanJob {
   progress: number;
   errorMessage: string | null;
   retryCount: number;
+  lastChunkIndex: number;
   createdAt: Date;
   updatedAt: Date;
   completedAt: Date | null;
@@ -47,6 +48,7 @@ function rowToJob(row: any): ScanJob {
     progress: row.progress,
     errorMessage: row.error_message,
     retryCount: row.retry_count,
+    lastChunkIndex: row.last_chunk_index || 0,
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
     completedAt: row.completed_at ? new Date(row.completed_at) : null,
@@ -83,6 +85,11 @@ export class ScanJobRepository {
 
   async findBySourcePath(sourcePath: string): Promise<ScanJob | null> {
     const result = await pool.query('SELECT * FROM scan_jobs WHERE source_path = $1', [sourcePath]);
+    return result.rows.length ? rowToJob(result.rows[0]) : null;
+  }
+
+  async findByFilenameAndSize(filename: string, fileSize: number): Promise<ScanJob | null> {
+    const result = await pool.query('SELECT * FROM scan_jobs WHERE filename = $1 AND file_size = $2', [filename, fileSize]);
     return result.rows.length ? rowToJob(result.rows[0]) : null;
   }
 
@@ -138,19 +145,37 @@ export class ScanJobRepository {
     );
   }
 
+  async updateChunkProgress(id: string, progress: number, chunkIndex: number): Promise<void> {
+    await pool.query(
+      `UPDATE scan_jobs
+       SET progress = $1, last_chunk_index = $2, updated_at = NOW()
+       WHERE id = $3`,
+      [Math.round(progress), chunkIndex, id]
+    );
+  }
+
   async markUploading(id: string, providerType: string, accountId: string): Promise<void> {
     await pool.query(
       `UPDATE scan_jobs
-       SET status = 'uploading', provider_type = $1, account_id = $2, progress = 0, updated_at = NOW()
+       SET status = 'uploading', provider_type = $1, account_id = $2, updated_at = NOW()
        WHERE id = $3`,
       [providerType, accountId, id]
+    );
+  }
+
+  async updateFileId(id: string, fileId: string): Promise<void> {
+    await pool.query(
+      `UPDATE scan_jobs
+       SET file_id = $1, updated_at = NOW()
+       WHERE id = $2`,
+      [fileId, id]
     );
   }
 
   async markCompleted(id: string, fileId: string): Promise<void> {
     await pool.query(
       `UPDATE scan_jobs
-       SET status = 'completed', file_id = $1, progress = 100, completed_at = NOW(), updated_at = NOW()
+       SET status = 'completed', file_id = $1, progress = 100, last_chunk_index = 0, completed_at = NOW(), updated_at = NOW()
        WHERE id = $2`,
       [fileId, id]
     );
@@ -168,9 +193,18 @@ export class ScanJobRepository {
   async resetForRetry(id: string): Promise<void> {
     await pool.query(
       `UPDATE scan_jobs
-       SET status = 'pending', error_message = NULL, progress = 0, updated_at = NOW()
+       SET status = 'pending', error_message = NULL, updated_at = NOW()
        WHERE id = $1`,
       [id]
+    );
+  }
+
+  async updateSourcePath(id: string, newPath: string): Promise<void> {
+    await pool.query(
+      `UPDATE scan_jobs
+       SET source_path = $1, updated_at = NOW()
+       WHERE id = $2`,
+      [newPath, id]
     );
   }
 

@@ -120,9 +120,15 @@ export class AutoUploadQueue {
     const { scanJobId, sourcePath, filename, fileSize, mimeType, directoryName } = job.data;
     logger.info({ scanJobId, filename, fileSize }, 'Processing auto-upload job');
 
+    const fullJob = await this.scanJobRepo.findById(scanJobId);
+    if (!fullJob) {
+      logger.error({ scanJobId }, 'Scan job not found in DB');
+      return;
+    }
+
     // Check if file already exists in library (final check before starting)
     const exists = await this.fileRepo.existsByNameAndSize(filename, fileSize);
-    if (exists) {
+    if (exists && fullJob.status !== 'uploading' && fullJob.status !== 'pending') {
       logger.info({ filename, fileSize }, 'File already exists in library, skipping auto-upload');
       await this.scanJobRepo.updateStatus(scanJobId, 'skipped');
       return;
@@ -165,53 +171,66 @@ export class AutoUploadQueue {
         
         try {
           // Update status to show we are actively working with this specific account
-          await this.scanJobRepo.markUploading(scanJobId, providerType, selectedAccountId);
-          await this.scanJobRepo.updateProgress(scanJobId, 0, 'pending');
-
           const chunkSize = appConfig.upload.chunkSize;
           const totalChunks = Math.ceil(fileSize / chunkSize);
 
-          // Determine collection name for videos: only if multiple videos in directory
-          const isImage = mimeType.startsWith('image/');
-          let collectionName = undefined;
+          let fileId = fullJob.fileId;
+          const startChunkIndex = fullJob.lastChunkIndex || 0;
 
-          if (isImage) {
-            collectionName = directoryName ?? filename.replace(/\.[^/.]+$/, '');
-          } else if (mimeType.startsWith('video/') && directoryName) {
-            // Count video files in the same directory
-            try {
-              const parentPath = dirname(sourcePath);
-              const entries = await readdir(parentPath, { withFileTypes: true });
-              const videoExts = new Set(['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.ts', '.mpeg', '.mpg', '.3gp']);
-              
-              const videoCount = entries.filter(entry => 
-                entry.isFile() && videoExts.has(extname(entry.name).toLowerCase())
-              ).length;
+          if (fileId && startChunkIndex > 0) {
+            logger.info({ scanJobId, fileId, startChunkIndex }, 'AUTO-UPLOAD: Resuming existing chunked upload');
+            await this.chunkManager.resumeChunkedUpload({ fileId, chunkSize, totalChunks });
+            await this.scanJobRepo.markUploading(scanJobId, providerType, selectedAccountId);
+          } else {
+            // New upload logic
+            await this.scanJobRepo.markUploading(scanJobId, providerType, selectedAccountId);
+            await this.scanJobRepo.updateProgress(scanJobId, 0, 'pending');
 
-              if (videoCount > 1) {
-                collectionName = directoryName;
+            // Determine collection name for videos: only if multiple videos in directory
+            const isImage = mimeType.startsWith('image/');
+            let collectionName = undefined;
+
+            if (isImage) {
+              collectionName = directoryName ?? filename.replace(/\.[^/.]+$/, '');
+            } else if (mimeType.startsWith('video/') && directoryName) {
+              // Count video files in the same directory
+              try {
+                const parentPath = dirname(sourcePath);
+                const entries = await readdir(parentPath, { withFileTypes: true });
+                const videoExts = new Set(['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.ts', '.mpeg', '.mpg', '.3gp']);
+                
+                const videoCount = entries.filter(entry => 
+                  entry.isFile() && videoExts.has(extname(entry.name).toLowerCase())
+                ).length;
+
+                if (videoCount > 1) {
+                  collectionName = directoryName;
+                }
+              } catch (err) {
+                logger.warn({ err, sourcePath }, 'Failed to count videos in directory for auto-categorization');
               }
-            } catch (err) {
-              logger.warn({ err, sourcePath }, 'Failed to count videos in directory for auto-categorization');
             }
+
+            fileId = await this.chunkManager.initializeChunkedUpload({
+              filename,
+              size: fileSize,
+              chunkSize,
+              totalChunks,
+              providerType,
+              mimeType,
+              encrypt: true,
+              collectionName,
+              accountId: selectedAccountId,
+            });
+            await this.scanJobRepo.updateFileId(scanJobId, fileId);
           }
 
-          const fileId = await this.chunkManager.initializeChunkedUpload({
-            filename,
-            size: fileSize,
-            chunkSize,
-            totalChunks,
-            providerType,
-            mimeType,
-            encrypt: true,
-            collectionName,
-            accountId: selectedAccountId,
-          });
+          if (!fileId) throw new Error("FileId not returned from initialization");
 
-          logger.info({ scanJobId, fileId, filename, totalChunks }, 'AUTO-UPLOAD: Starting data transfer to provider');
+          logger.info({ scanJobId, fileId, filename, totalChunks, startChunkIndex }, 'AUTO-UPLOAD: Starting data transfer to provider');
 
           // Upload chunks
-          for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+          for (let chunkIndex = startChunkIndex; chunkIndex < totalChunks; chunkIndex++) {
             const chunkStart = chunkIndex * chunkSize;
             const actualChunkSize = Math.min(chunkSize, fileSize - chunkStart);
 
@@ -226,7 +245,7 @@ export class AutoUploadQueue {
             await this.chunkManager.uploadChunkData(fileId, chunkIndex, stream, actualChunkSize);
 
             const progress = Math.round(((chunkIndex + 1) / totalChunks) * 100);
-            await this.scanJobRepo.updateProgress(scanJobId, progress);
+            await this.scanJobRepo.updateChunkProgress(scanJobId, progress, chunkIndex + 1);
             await job.updateProgress(progress);
           }
 

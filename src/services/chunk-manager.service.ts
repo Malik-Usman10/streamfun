@@ -416,9 +416,31 @@ export class ChunkManager {
     };
   }
 
-  async resumeUpload(fileId: string): Promise<void> {
-    logger.info({ fileId }, 'Resume upload not yet implemented');
-    // TODO: Implement resume logic
+  async resumeChunkedUpload(params: {
+    fileId: string;
+    chunkSize: number;
+    totalChunks: number;
+  }): Promise<void> {
+    logger.info({ fileId: params.fileId }, 'Resuming chunked upload metadata from database');
+    const fileRecord = await this.fileRepository.findById(params.fileId);
+    if (!fileRecord || !fileRecord.isChunked) {
+      throw new Error(`Cannot resume upload: Chunked file record not found for ${params.fileId}`);
+    }
+
+    this.uploadMetadata.set(params.fileId, {
+      filename: fileRecord.filename,
+      size: fileRecord.size,
+      chunkSize: params.chunkSize,
+      totalChunks: params.totalChunks,
+      providerType: fileRecord.providerType!,
+      mimeType: fileRecord.mimeType,
+      encryptionKey: fileRecord.encryptionKey || undefined,
+      iv: fileRecord.encryptionIv || undefined,
+      uploadedChunks: [], 
+      category: fileRecord.category || undefined,
+      collectionName: fileRecord.collectionName || undefined,
+      accountId: fileRecord.accountId!,
+    });
   }
 
   async initializeChunkedUpload(params: {
