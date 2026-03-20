@@ -27,6 +27,7 @@ export interface Config {
     port: number;
     env: string;
     apiBaseUrl: string;
+    internalSecret: string;
   };
   auth: {
     jwtSecret: string;
@@ -96,6 +97,7 @@ export const appConfig: Config = {
     port: getEnvNumber('PORT', 3000),
     env: getEnvVar('NODE_ENV', 'development'),
     apiBaseUrl: getEnvVar('API_BASE_URL', 'http://localhost:3000'),
+    internalSecret: getEnvVar('INTERNAL_SECRET', 'dev-secret-do-not-use-in-prod'),
   },
   auth: {
     jwtSecret: getEnvVar('JWT_SECRET'),

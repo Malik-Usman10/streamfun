@@ -5,6 +5,7 @@
 
 import Gallery from './Gallery.js';
 import appState from '../state.js';
+import { createElement, showSuccess, showError } from '../utils/dom.js';
 
 class CategoryView {
   constructor(container, fileType = 'images') {
@@ -500,11 +501,11 @@ class CategoryView {
         throw new Error(errorData.error || 'Failed to rename category');
       }
 
-      window.showNotification('Category renamed successfully', 'success');
+      showSuccess('Category renamed successfully');
       await this.loadCategories(); // Refresh list
     } catch (error) {
       console.error('Rename category error:', error);
-      window.showNotification(error.message, 'error');
+      showError(error.message);
     }
   }
 }

@@ -5,7 +5,7 @@
 
 import appState from '../state.js';
 import { formatBytes, formatDate, escapeHtml } from '../utils/format.js';
-import { createElement } from '../utils/dom.js';
+import { createElement, showSuccess, showError, showInfo } from '../utils/dom.js';
 
 class Gallery {
   constructor(container, options = {}) {
@@ -23,7 +23,7 @@ class Gallery {
     this.intersectionObserver = null;
     this.infiniteScrollObserver = null;
     this.renderedFileIds = new Set();
-    
+
     this.init();
   }
 
@@ -46,9 +46,9 @@ class Gallery {
     this.elements.loadingState = this.container.querySelector('.loading-state');
     this.elements.galleryGrid = this.container.querySelector('.gallery-grid');
     this.elements.emptyState = this.container.querySelector('.empty-state');
-    
+
     // Create sentinel for infinite scroll
-    this.elements.sentinel = createElement('div', { 
+    this.elements.sentinel = createElement('div', {
       className: 'scroll-sentinel',
       style: { height: '20px', width: '100%', gridColumn: '1 / -1' }
     });
@@ -284,7 +284,7 @@ class Gallery {
 
     if (isVideo) {
       // Add a small "Video" badge
-      const badge = createElement('div', { 
+      const badge = createElement('div', {
         className: 'video-badge',
         style: {
           position: 'absolute',
@@ -423,16 +423,16 @@ class Gallery {
       });
 
       if (!response.ok) throw new Error('Failed to rename file');
-      
+
       const data = await response.json();
       if (data.success) {
         // Update local state or trigger refresh
-        window.showNotification('File renamed successfully', 'success');
+        showSuccess('File renamed successfully');
         this.render(); // Re-render to show new name
       }
     } catch (error) {
       console.error('Rename error:', error);
-      window.showNotification(error.message, 'error');
+      showError(error.message);
     }
   }
 
@@ -443,12 +443,12 @@ class Gallery {
    */
   async handleRefreshThumbnailClick(file, article) {
     try {
-      window.showNotification('Regenerating thumbnail...', 'info');
-      
+      showInfo('Regenerating thumbnail...');
+
       // Import API dynamically
       const { default: api } = await import('../api.js');
       const result = await api.regenerateThumbnail(file.id);
-      
+
       if (result.success && result.thumbnail) {
         const img = article.querySelector('.thumbnail');
         if (img) {
@@ -469,11 +469,11 @@ class Gallery {
             placeholder.replaceWith(newImg);
           }
         }
-        window.showNotification('Thumbnail updated', 'success');
+        showSuccess('Thumbnail updated');
       }
     } catch (error) {
       console.error('Refresh thumbnail error:', error);
-      window.showNotification(error.message, 'error');
+      showError(error.message);
     }
   }
 
@@ -548,7 +548,7 @@ class Gallery {
     if (this.intersectionObserver) {
       this.intersectionObserver.disconnect();
     }
-    
+
     if (this.infiniteScrollObserver) {
       this.infiniteScrollObserver.disconnect();
     }

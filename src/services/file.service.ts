@@ -421,55 +421,95 @@ export class FileService {
 
     logger.info({ fileId, filename: file.filename }, 'Regenerating thumbnail');
 
-    let thumbnailData: string;
+    const { appConfig } = await import('../config/index.js');
+    let thumbnailData: string | undefined;
 
-    if (file.isChunked) {
-      if (!this.chunkManager) {
-        throw new Error('ChunkManager not available');
+    try {
+      // 1. Try URL-based generation (Most robust for ffmpeg seeking)
+      let videoUrl: string | undefined;
+
+      if (!file.isChunked) {
+        try {
+          const account = await this.accountRotator.selectAccountForDownload(file.providerType, file.size);
+          const provider = this.providerFactory.getProvider(file.providerType);
+          await this.tokenManager.refreshIfNeeded(account, provider);
+          const link = await provider.generateStreamingLink(account, file.providerFileId);
+          
+          // Check if link is a real URL (not the bridge fallback)
+          if (link.url.startsWith('http') && !link.url.includes('/api/files/')) {
+            videoUrl = link.url;
+            logger.debug({ fileId }, 'Using direct provider link for thumbnail');
+          }
+        } catch (e) {
+          logger.warn({ fileId, error: (e as Error).message }, 'Failed to get direct provider link for thumbnail');
+        }
       }
 
-      // Download first 10MB for thumbnail generation
-      const stream = await this.chunkManager.downloadFileInChunks(fileId, 0, 10 * 1024 * 1024);
-      const reader = stream.getReader();
-      const chunks: Uint8Array[] = [];
-      
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
+      // 2. If no direct link or is chunked, use internal proxy with secret
+      if (!videoUrl && file.mimeType?.startsWith('video/')) {
+        videoUrl = `${appConfig.server.apiBaseUrl}/api/files/${fileId}/play?internalToken=${appConfig.server.internalSecret}`;
+        logger.debug({ fileId }, 'Using internal proxy URL for thumbnail');
       }
-      
-      const buffer = Buffer.concat(chunks);
-      thumbnailData = await this.thumbnailService.generateThumbnailFromBuffer(
-        buffer,
-        file.mimeType || 'video/mp4'
-      );
-    } else {
-      // For non-chunked files, download the whole thing (or range if provider supports)
-      const { stream } = await this.downloadFile(fileId);
-      const reader = stream.getReader();
-      const chunks: Uint8Array[] = [];
-      
-      // Limit to 10MB for safety if it's a huge single file
-      let totalSize = 0;
-      while (totalSize < 10 * 1024 * 1024) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-        totalSize += value.length;
+
+      if (videoUrl && file.mimeType?.startsWith('video/')) {
+        try {
+          thumbnailData = await this.thumbnailService.generateVideoThumbnail(videoUrl, {
+            timestamp: 0 // Start at 0 for best chance of catching metadata
+          });
+        } catch (e) {
+          logger.warn({ fileId, error: (e as Error).message }, 'URL-based thumbnail generation failed, falling back to buffer');
+        }
       }
+
+      // 3. Fallback to buffer-based (for images or if URL failed)
+      if (!thumbnailData) {
+        logger.info({ fileId }, 'Using buffer-based fallback for thumbnail');
+        const rangeSize = 15 * 1024 * 1024; // 15MB for fallback
+        let buffer: Buffer;
+
+        if (file.isChunked && this.chunkManager) {
+          const stream = await this.chunkManager.downloadFileInChunks(fileId, 0, rangeSize);
+          const reader = stream.getReader();
+          const chunks: Uint8Array[] = [];
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+          }
+          buffer = Buffer.concat(chunks);
+        } else {
+          const { stream } = await this.downloadFile(fileId, 0, rangeSize);
+          const reader = stream.getReader();
+          const chunks: Uint8Array[] = [];
+          
+          let totalSize = 0;
+          while (totalSize < rangeSize) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+            totalSize += value.length;
+          }
+          buffer = Buffer.concat(chunks);
+        }
+
+        thumbnailData = await this.thumbnailService.generateThumbnailFromBuffer(
+          buffer,
+          file.mimeType || 'video/mp4'
+        );
+      }
+
+      if (!thumbnailData) {
+        throw new Error('All thumbnail generation methods failed');
+      }
+
+      await this.fileRepository.update(fileId, { thumbnailData });
+      logger.info({ fileId }, 'Thumbnail regenerated successfully');
       
-      const buffer = Buffer.concat(chunks);
-      thumbnailData = await this.thumbnailService.generateThumbnailFromBuffer(
-        buffer,
-        file.mimeType || 'video/mp4'
-      );
+      return thumbnailData;
+    } catch (error: any) {
+      logger.error({ fileId, error: error.message }, 'Failed to regenerate thumbnail');
+      throw error;
     }
-
-    await this.fileRepository.update(fileId, { thumbnailData });
-    logger.info({ fileId }, 'Thumbnail regenerated successfully');
-    
-    return thumbnailData;
   }
 
   private delay(ms: number): Promise<void> {

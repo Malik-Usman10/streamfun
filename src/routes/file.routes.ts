@@ -490,8 +490,15 @@ export function createFileRoutes(fileService: FileService, streamService: Stream
   router.get('/:id/play', async (req, res, next) => {
     const startTime = Date.now();
     const { id } = req.params;
+    const internalToken = req.query.internalToken;
     
+    // Allow internal bypass or require auth
+    const { appConfig } = await import('../config/index.js');
+    const isInternal = internalToken === appConfig.server.internalSecret;
+
     try {
+      // If not internal, we rely on the parent router's requireAuth middleware 
+      // (which is already applied to /api/files in app.ts)
       const file = await fileService.getFileMetadata(id);
 
       // Set basic headers for streaming
