@@ -55,7 +55,9 @@ export class AutoUploadQueue {
 
   async enqueue(data: AutoUploadJobData): Promise<void> {
     await this.queue.add(`upload-${data.scanJobId}`, data, {
-      jobId: `scan-${data.scanJobId}`, // idempotent — same job won't be added twice
+      // Use scanJobId + timestamp to ensure we can re-enqueue even if Redis state is stale
+      // while still being idempotent within a 1-second window during a single scan.
+      jobId: `scan-${data.scanJobId}-${Math.floor(Date.now() / 1000)}`,
     });
     logger.info({ scanJobId: data.scanJobId, filename: data.filename }, 'Enqueued auto-upload job');
   }
