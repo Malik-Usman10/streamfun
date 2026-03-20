@@ -241,10 +241,20 @@ export class FileRepository {
 
   async existsByNameAndSize(filename: string, size: number): Promise<boolean> {
     const result = await pool.query(
-      'SELECT id FROM files WHERE filename = $1 AND size = $2 LIMIT 1',
+      "SELECT id, metadata FROM files WHERE filename = $1 AND size = $2 LIMIT 1",
       [filename, size]
     );
-    return result.rows.length > 0;
+    
+    if (result.rows.length === 0) return false;
+    
+    // If the file is specifically marked as corrupted, we treat it as if it doesn't exist
+    // so the auto-uploader can try again.
+    const metadata = result.rows[0].metadata;
+    if (metadata && metadata.corrupted === true) {
+      return false;
+    }
+    
+    return true;
   }
 
   private mapRow(row: any): FileRecord {

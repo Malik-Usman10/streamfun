@@ -362,8 +362,22 @@ export class ChunkManager {
               // If this chunk portion is outside the range, continue the while loop
             }
           }
-        } catch (error) {
-          logger.error({ error, chunkIndex: currentChunk }, 'Chunk stream download failed');
+        } catch (error: any) {
+          logger.error({ error: error.message, chunkIndex: currentChunk, fileId: fileRecord.fileId }, 'Chunk stream download failed');
+          
+          // Mark file as corrupted if it's a provider-side missing/empty chunk error
+          if (error.message?.includes('Downloaded chunk is empty') || error.message?.includes('missing on provider')) {
+            logger.warn({ fileId: fileRecord.fileId }, 'Marking file as corrupted in database due to missing cloud data');
+            this.fileRepository.update(fileRecord.fileId, {
+              metadata: {
+                ...(fileRecord.metadata || {}),
+                corrupted: true,
+                corruptionReason: error.message,
+                corruptedAt: new Date().toISOString()
+              }
+            }).catch(err => logger.error({ err, fileId: fileRecord.fileId }, 'Failed to mark file as corrupted'));
+          }
+
           if (currentReader) {
             currentReader.cancel().catch(() => {});
             currentReader = null;

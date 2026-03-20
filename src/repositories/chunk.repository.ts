@@ -13,6 +13,7 @@ export interface ChunkedFileRecord {
   encryptionKey: string;
   iv: string;
   chunks: ChunkMetadata[];
+  metadata?: Record<string, any>;
 }
 
 export class ChunkRepository {
@@ -112,7 +113,7 @@ export class ChunkRepository {
 
   async getChunkedFile(fileId: string): Promise<ChunkedFileRecord | null> {
     const fileResult = await pool.query(
-      `SELECT filename, mime_type, size, encryption_key, encryption_iv 
+      `SELECT filename, mime_type, size, encryption_key, encryption_iv, metadata 
        FROM files WHERE id = $1 AND is_chunked = true`,
       [fileId]
     );
@@ -142,6 +143,7 @@ export class ChunkRepository {
       encryptionKey: file.encryption_key,
       iv: file.encryption_iv,
       chunks,
+      metadata: file.metadata,
     };
   }
 
