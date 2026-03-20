@@ -35,6 +35,7 @@ import { AutoUploadQueue } from './services/auto-upload.queue.js';
 import { DirectoryScanner } from './services/directory-scanner.service.js';
 import { BackupService } from './services/backup.service.js';
 import { BackupQueue } from './services/backup.queue.js';
+import { IntegrityService } from './services/integrity.service.js';
 
 // Providers
 import { ProviderFactory } from './providers/provider.factory.js';
@@ -116,7 +117,22 @@ export function createApp() {
   );
 
   const scanJobRepo = new ScanJobRepository();
-  const autoUploadQueue = new AutoUploadQueue(scanJobRepo, fileRepository, chunkManager, accountSelector, accountService);
+  const integrityService = new IntegrityService(
+    chunkRepository,
+    fileRepository,
+    scanJobRepo,
+    accountRepository,
+    providerFactory
+  );
+  
+  const autoUploadQueue = new AutoUploadQueue(
+    scanJobRepo, 
+    fileRepository, 
+    chunkManager, 
+    accountSelector, 
+    accountService, 
+    integrityService
+  );
   const directoryScanner = new DirectoryScanner(scanJobRepo, fileRepository, autoUploadQueue);
 
   const backupService = new BackupService(accountService, settingsRepository);

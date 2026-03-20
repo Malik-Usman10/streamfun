@@ -1209,7 +1209,10 @@ class FullPageDashboard {
                 <div style="font-size:0.8rem;color:var(--color-error);margin-top:0.2rem;">${j.errorMessage ?? 'Unknown error'}</div>
                 <div style="font-size:0.75rem;color:var(--text-secondary);margin-top:0.1rem;">Retried ${j.retryCount}x · ${this._formatBytes(j.fileSize)}</div>
               </div>
-              <button class="btn btn-sm au-retry-btn" data-id="${j.id}" style="flex-shrink:0;">Retry</button>
+              <div style="display:flex;flex-direction:column;gap:0.4rem;flex-shrink:0;">
+                <button class="btn btn-sm au-retry-btn" data-id="${j.id}">Retry</button>
+                <button class="btn btn-sm btn-secondary au-dismiss-fail-btn" data-id="${j.id}">Dismiss</button>
+              </div>
             </div>
           `).join('');
 
@@ -1219,6 +1222,20 @@ class FullPageDashboard {
               btn.textContent = 'Queuing…';
               await fetch(`/api/scan-jobs/${btn.dataset.id}/retry`, { method: 'POST', credentials: 'include' });
               await this._refreshAutoUpload(content);
+            });
+          });
+
+          failEl.querySelectorAll('.au-dismiss-fail-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+              btn.disabled = true;
+              btn.textContent = 'Dismissing…';
+              if (confirm('Dismiss this permanently? The file will not be re-uploaded automatically.')) {
+                await fetch(`/api/scan-jobs/${btn.dataset.id}/dismiss`, { method: 'POST', credentials: 'include' });
+                await this._refreshAutoUpload(content);
+              } else {
+                btn.disabled = false;
+                btn.textContent = 'Dismiss';
+              }
             });
           });
         }

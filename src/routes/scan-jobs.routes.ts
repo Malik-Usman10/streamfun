@@ -80,5 +80,19 @@ export function createScanJobRoutes(
     } catch (err) { next(err); }
   });
 
+  // POST /api/scan-jobs/:id/dismiss — dismiss a failed job
+  router.post('/:id/dismiss', async (req, res, next) => {
+    try {
+      const job = await scanJobRepo.findById(req.params.id);
+      if (!job) return res.status(404).json({ error: 'Scan job not found' });
+      if (job.status !== 'failed') {
+        return res.status(400).json({ error: 'Only failed jobs can be dismissed' });
+      }
+
+      await scanJobRepo.markDismissed(job.id);
+      res.json({ success: true, message: 'Job dismissed' });
+    } catch (err) { next(err); }
+  });
+
   return router;
 }

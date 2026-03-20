@@ -188,13 +188,15 @@ export class RcloneStorageProvider implements IStorageProvider {
       logger.info({ command: `rclone ${args.join(' ')}` }, 'Executing buffered rclone streaming command');
       const child = spawn('rclone', args);
 
+      let hasReceivedData = false;
+      let stderrBuffer = '';
+      let streamClosed = false;    // Guards ALL controller ops
+      let isCanceled = false;      // Track if we intentionally killed it
+      let stdoutEnded = false;     // stdout pipe finished
+      let processExitCode: number | null | undefined = undefined; // undefined = not yet exited
+
       return new ReadableStream({
         start(controller) {
-          let hasReceivedData = false;
-          let stderrBuffer = '';
-          let streamClosed = false;    // Guards ALL controller ops
-          let stdoutEnded = false;     // stdout pipe finished
-          let processExitCode: number | null | undefined = undefined; // undefined = not yet exited
 
           // Safe wrappers — Bun throws if you touch a closed controller
           const safeEnqueue = (chunk: Uint8Array) => {
@@ -215,23 +217,35 @@ export class RcloneStorageProvider implements IStorageProvider {
           // Called when BOTH stdout has ended AND the process has closed.
           // Only then do we know the full picture.
           const maybeFinalize = () => {
-            if (!stdoutEnded || processExitCode === undefined) return; // Still waiting
-            if (streamClosed) return; // Already finalized
+            try {
+              if (!stdoutEnded || processExitCode === undefined) return; // Still waiting
+              if (streamClosed) return; // Already finalized
 
-            if (processExitCode !== 0) {
-              // Non-zero exit OR killed by signal (code === null)
-              const errorMessage = stderrBuffer.trim() || `Rclone cat exited with code ${processExitCode}`;
-              logger.error({ code: processExitCode, fileId, stderr: stderrBuffer }, 'Rclone cat process failed');
-              if (!hasReceivedData) {
-                safeError(new Error(`Download failed: ${errorMessage}`));
-              } else {
-                safeError(new Error(`Stream interrupted: ${errorMessage}`));
+              // If we intentionally canceled, ignore any exit codes/signals
+              if (isCanceled) {
+                safeClose();
+                return;
               }
-            } else if (!hasReceivedData) {
-              logger.warn({ fileId }, 'Rclone cat returned no data (empty or missing file on provider)');
-              safeError(new Error(`Downloaded chunk is empty — file may be missing on provider: ${fileId}`));
-            } else {
-              safeClose();
+
+              if (processExitCode !== 0) {
+                // Non-zero exit OR killed by signal (code === null)
+                const errorMessage = stderrBuffer.trim() || `Rclone cat exited with code ${processExitCode}`;
+                logger.error({ code: processExitCode, fileId, stderr: stderrBuffer }, 'Rclone cat process failed');
+                
+                if (!hasReceivedData) {
+                  safeError(new Error(`Download failed: ${errorMessage}`));
+                } else {
+                  safeError(new Error(`Stream interrupted: ${errorMessage}`));
+                }
+              } else if (!hasReceivedData) {
+                logger.warn({ fileId }, 'Rclone cat returned no data (empty or missing file on provider)');
+                safeError(new Error(`Downloaded chunk is empty — file may be missing on provider: ${fileId}`));
+              } else {
+                safeClose();
+              }
+            } catch (err) {
+              logger.error({ err, fileId }, 'Error in maybeFinalize');
+              safeError(err as Error);
             }
           };
 
@@ -265,6 +279,7 @@ export class RcloneStorageProvider implements IStorageProvider {
         },
         cancel() {
           logger.debug({ fileId }, 'Killing rclone cat process due to stream cancellation');
+          isCanceled = true;
           child.kill();
         }
       });

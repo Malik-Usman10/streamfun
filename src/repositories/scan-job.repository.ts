@@ -221,4 +221,30 @@ export class ScanJobRepository {
     );
     return result.rows.map(rowToJob);
   }
+
+  /**
+   * Find jobs completed in the last X hours
+   */
+  async findRecentlyCompleted(hours: number): Promise<ScanJob[]> {
+    const result = await pool.query(
+      `SELECT * FROM scan_jobs 
+       WHERE status = 'completed' 
+         AND completed_at > NOW() - (interval '1 hour' * $1) 
+       ORDER BY completed_at DESC`,
+      [hours]
+    );
+    return result.rows.map(rowToJob);
+  }
+
+  /**
+   * Mark a job as dismissed (skipped) so it leaves the failed/active list
+   */
+  async markDismissed(id: string, reason: string = 'Dismissed by user'): Promise<void> {
+    await pool.query(
+      `UPDATE scan_jobs 
+       SET status = 'skipped', error_message = $1, updated_at = NOW() 
+       WHERE id = $2`,
+      [reason, id]
+    );
+  }
 }

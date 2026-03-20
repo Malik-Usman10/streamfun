@@ -11,6 +11,7 @@ import { ScanJobRepository } from '../repositories/scan-job.repository.js';
 import { FileRepository } from '../repositories/file.repository.js';
 import { ChunkManager } from './chunk-manager.service.js';
 import { AccountSelector } from './account-selector.service.js';
+import { IntegrityService } from './integrity.service.js';
 import type { ProviderType } from '../types/index.js';
 import logger from '../utils/logger.js';
 
@@ -40,7 +41,8 @@ export class AutoUploadQueue {
     private fileRepo: FileRepository,
     private chunkManager: ChunkManager,
     private accountSelector: AccountSelector,
-    private accountService?: any // Optional to avoid circular deps problems if any, but we'll use it if present
+    private accountService?: any, // Optional to avoid circular deps problems if any, but we'll use it if present
+    private integrityService?: IntegrityService // Optional for backward compatibility in tests
   ) {
     this.queue = new Queue<AutoUploadJobData>(QUEUE_NAME, {
       connection: redisConnection,
@@ -75,6 +77,13 @@ export class AutoUploadQueue {
 
   /** Re-enqueue jobs that were interrupted (status=uploading on startup) OR were never enqueued (status=pending) */
   async recoverInterrupted(): Promise<void> {
+    // Background audit of recently completed jobs for integrity
+    if (this.integrityService) {
+      this.integrityService.auditRecentJobs(24).catch(err => {
+        logger.error({ err }, 'Startup integrity audit failed');
+      });
+    }
+
     // First, drain all non-active BullMQ jobs from the queue.
     // This ensures stale jobs (e.g., from a previous code version with timestamp-based IDs)
     // are cleaned up before we re-enqueue with the new stable IDs.
@@ -298,13 +307,38 @@ export class AutoUploadQueue {
           // Finalize
           await this.chunkManager.finalizeChunkedUpload(fileId);
 
-          // Mark scan job complete
+          // Mark scan job complete temporarily
           await this.scanJobRepo.markCompleted(scanJobId, fileId);
-          logger.info({ scanJobId, filename, fileId }, 'AUTO-UPLOAD: Upload successful');
+          logger.info({ scanJobId, filename, fileId }, 'AUTO-UPLOAD: Upload transfer successful');
           
           // Refresh quota
           if (this.accountService) {
             this.accountService.refreshAccountQuota(selectedAccountId).catch(() => {});
+          }
+
+          // INTEGRITY CHECK
+          if (this.integrityService) {
+            logger.info({ fileId }, 'AUTO-UPLOAD: Performing post-upload integrity verification');
+            const integrity = await this.integrityService.checkFileIntegrity(fileId, true);
+            if (!integrity.valid) {
+              const errorMessage = `INTEGRITY_FAILURE: ${integrity.reason}`;
+              logger.error({ fileId, filename, reason: integrity.reason }, 'Post-upload integrity check failed');
+              
+              // Mark as failed instead of completed
+              await this.scanJobRepo.markFailed(scanJobId, errorMessage);
+              
+              // Mark file record as corrupted
+              await this.fileRepo.update(fileId, {
+                metadata: {
+                  corrupted: true,
+                  corruptionReason: integrity.reason,
+                  corruptedAt: new Date().toISOString()
+                }
+              }).catch(() => {});
+              
+              throw new Error(errorMessage); // Trigger outer fail handling
+            }
+            logger.info({ fileId, filename }, 'AUTO-UPLOAD: Integrity check passed successfully');
           }
 
           uploadSuccess = true;
