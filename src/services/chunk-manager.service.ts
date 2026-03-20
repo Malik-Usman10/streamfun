@@ -394,7 +394,14 @@ export class ChunkManager {
 
   async getUploadProgress(fileId: string): Promise<UploadProgress> {
     const chunks = await this.chunkRepository.getChunksByFileId(fileId);
-    const totalChunks = await this.chunkRepository.getTotalChunks(fileId);
+
+    // Calculate expected total from the file's actual size, NOT from chunk count in DB
+    const file = await this.fileRepository.findById(fileId);
+    if (!file) {
+      throw new Error(`File not found: ${fileId}`);
+    }
+    const chunkSize = this.defaultChunkSize;
+    const totalChunks = Math.ceil(file.size / chunkSize);
 
     const uploadedChunks = chunks.length;
     const uploadedIndices = new Set(chunks.map(c => c.chunkIndex));
