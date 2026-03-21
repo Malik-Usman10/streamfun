@@ -191,13 +191,22 @@ export class ScanJobRepository {
     );
   }
 
-  async resetForRetry(id: string): Promise<void> {
-    await pool.query(
-      `UPDATE scan_jobs
-       SET status = 'pending', error_message = NULL, updated_at = NOW()
-       WHERE id = $1`,
-      [id]
-    );
+  async resetForRetry(id: string, fallbackChunkIndex?: number): Promise<void> {
+    if (fallbackChunkIndex !== undefined) {
+      await pool.query(
+        `UPDATE scan_jobs
+         SET status = 'pending', error_message = NULL, last_chunk_index = $2, updated_at = NOW()
+         WHERE id = $1`,
+        [id, fallbackChunkIndex]
+      );
+    } else {
+      await pool.query(
+        `UPDATE scan_jobs
+         SET status = 'pending', error_message = NULL, updated_at = NOW()
+         WHERE id = $1`,
+        [id]
+      );
+    }
   }
 
   async updateSourcePath(id: string, newPath: string): Promise<void> {

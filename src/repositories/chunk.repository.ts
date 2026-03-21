@@ -150,4 +150,8 @@ export class ChunkRepository {
   async deleteChunksByFileId(fileId: string): Promise<void> {
     await pool.query('DELETE FROM file_chunks WHERE file_id = $1', [fileId]);
   }
+
+  async deleteChunkByIndex(fileId: string, chunkIndex: number): Promise<void> {
+    await pool.query('DELETE FROM file_chunks WHERE file_id = $1 AND chunk_index = $2', [fileId, chunkIndex]);
+  }
 }

@@ -1,12 +1,14 @@
 // REST API routes for scan_jobs (auto-upload tracking)
 import { Router } from 'express';
 import { ScanJobRepository } from '../repositories/scan-job.repository.js';
+import { ChunkRepository } from '../repositories/chunk.repository.js';
 import { DirectoryScanner } from '../services/directory-scanner.service.js';
 import { AutoUploadQueue } from '../services/auto-upload.queue.js';
 import logger from '../utils/logger.js';
 
 export function createScanJobRoutes(
   scanJobRepo: ScanJobRepository,
+  chunkRepo: ChunkRepository,
   scanner: DirectoryScanner,
   queue: AutoUploadQueue
 ): Router {
@@ -55,7 +57,42 @@ export function createScanJobRoutes(
         return res.status(400).json({ error: 'Only failed jobs can be retried' });
       }
 
-      await scanJobRepo.resetForRetry(job.id);
+      let fallbackChunkIndex: number | undefined;
+
+      // Smart Integrity Repair logic
+      // If the error message contains "[chunk:X]", then only wipe that specific corrupted chunk
+      if (job.errorMessage && job.errorMessage.startsWith('INTEGRITY_FAILURE') && job.fileId) {
+        const chunkMatch = job.errorMessage.match(/\[chunk:(\d+)\]/);
+        if (chunkMatch) {
+          const badIndex = parseInt(chunkMatch[1], 10);
+          logger.info({ fileId: job.fileId, badIndex }, 'Applying smart integrity repair for corrupted chunk');
+          await chunkRepo.deleteChunkByIndex(job.fileId, badIndex);
+          fallbackChunkIndex = badIndex;
+        } else {
+          // Fallback: If no chunk is specified, we wipe all chunks to enforce a clean re-upload
+          logger.warn({ fileId: job.fileId }, 'Applying full integrity repair (no chunk specified)');
+          await chunkRepo.deleteChunksByFileId(job.fileId);
+          fallbackChunkIndex = 0;
+        }
+      }
+
+      await scanJobRepo.resetForRetry(job.id, fallbackChunkIndex);
+      
+      // Clear corrupted metadata if file exists so auto-uploader doesn't skip it
+      if (job.fileId) {
+        const { FileRepository } = await import('../repositories/file.repository.js');
+        const fileRepo = new FileRepository();
+        await fileRepo.update(job.fileId, {
+          metadata: { corrupted: false, corruptionReason: null, corruptedAt: null }
+        }).catch(() => {});
+      }
+
+      // Use progress for priority: single-chunk repairs keep original high progress,
+      // full wipe repairs reset to 0
+      const retryProgress = (fallbackChunkIndex !== undefined && fallbackChunkIndex > 0) 
+        ? job.progress 
+        : 0;
+
       await queue.enqueue({
         scanJobId: job.id,
         sourcePath: job.sourcePath,
@@ -63,6 +100,7 @@ export function createScanJobRoutes(
         fileSize: job.fileSize,
         mimeType: job.mimeType ?? 'application/octet-stream',
         directoryName: job.directoryName ?? undefined,
+        progress: retryProgress,
       });
 
       res.json({ success: true, message: 'Job re-queued' });

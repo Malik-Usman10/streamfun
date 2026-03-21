@@ -26,6 +26,7 @@ export interface AutoUploadJobData {
   mimeType: string;
   directoryName?: string;
   isRecovery?: boolean;
+  progress?: number;
 }
 
 export interface IntegrityJobData {
@@ -77,7 +78,11 @@ export class AutoUploadQueue {
 
   async enqueue(data: AutoUploadJobData): Promise<void> {
     const jobId = `scan-${data.scanJobId}`;
-    const priority = data.isRecovery ? 1 : 10; // Recovered/Resumed jobs get higher priority (lower number)
+    
+    // Calculate priority: 99% done = priority 1 (High), 0% done = priority 100 (Low)
+    const priority = data.progress !== undefined 
+      ? Math.max(1, 100 - Math.floor(data.progress))
+      : 100;
 
     // Remove any previous completed/failed job with the same ID so rescan can re-enqueue
     const existingJob = await this.queue.getJob(jobId);
@@ -137,11 +142,25 @@ export class AutoUploadQueue {
     const interrupted = await this.scanJobRepo.findByStatus('uploading');
     const pending = await this.scanJobRepo.findByStatus('pending');
     const skipped = await this.scanJobRepo.findByStatus('skipped');
+    const stuckVerifying = await this.scanJobRepo.findByStatus('verifying');
     
     // Reset skipped jobs back to pending — they may have been incorrectly skipped
     // by a stale worker on another node or due to a transient access issue
     for (const job of skipped) {
       await this.scanJobRepo.resetForRetry(job.id);
+    }
+
+    // Jobs stuck in 'verifying' from a crash: mark them completed again so the
+    // integrity queue can re-audit them cleanly
+    for (const job of stuckVerifying) {
+      if (job.fileId) {
+        await this.scanJobRepo.markCompleted(job.id, job.fileId);
+        await this.enqueueIntegrityCheck({
+          fileId: job.fileId,
+          scanJobId: job.id,
+          filename: job.filename
+        });
+      }
     }
 
     const jobsToRecover = [...interrupted, ...pending, ...skipped];
@@ -162,7 +181,8 @@ export class AutoUploadQueue {
         fileSize: job.fileSize,
         mimeType: job.mimeType ?? 'application/octet-stream',
         directoryName: job.directoryName ?? undefined,
-        isRecovery: true // Highlight prioritized recovery
+        isRecovery: true, // Highlight prioritized recovery
+        progress: job.progress
       });
     }
   }
@@ -218,8 +238,11 @@ export class AutoUploadQueue {
           
           const result = await this.integrityService.checkFileIntegrity(fileId, true);
           if (!result.valid) {
-            const errorMessage = `INTEGRITY_FAILURE: ${result.reason}`;
-            logger.warn({ scanJobId, filename, reason: result.reason }, 'Integrity audit found corruption');
+            let errorMessage = `INTEGRITY_FAILURE: ${result.reason}`;
+            if (result.failedChunkIndex !== undefined) {
+              errorMessage += ` [chunk:${result.failedChunkIndex}]`;
+            }
+            logger.warn({ scanJobId, filename, reason: result.reason, failedChunkIndex: result.failedChunkIndex }, 'Integrity audit found corruption');
             
             await this.scanJobRepo.markFailed(scanJobId, errorMessage);
             await this.fileRepo.update(fileId, {
@@ -321,7 +344,8 @@ export class AutoUploadQueue {
           let fileId = fullJob.fileId;
           const startChunkIndex = fullJob.lastChunkIndex || 0;
 
-          if (fileId && startChunkIndex > 0) {
+          if (fileId) {
+            // Resume — file record already exists from a previous attempt
             logger.info({ scanJobId, fileId, startChunkIndex }, 'AUTO-UPLOAD: Resuming existing chunked upload');
             await this.chunkManager.resumeChunkedUpload({ fileId, chunkSize, totalChunks });
             await this.scanJobRepo.markUploading(scanJobId, providerType, selectedAccountId);
@@ -480,6 +504,8 @@ export class AutoUploadQueue {
 
   async close(): Promise<void> {
     if (this.worker) await this.worker.close();
+    if (this.integrityWorker) await this.integrityWorker.close();
     await this.queue.close();
+    await this.integrityQueue.close();
   }
 }

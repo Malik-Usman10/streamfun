@@ -10,6 +10,7 @@ export interface IntegrityResult {
   valid: boolean;
   reason?: string;
   details?: any;
+  failedChunkIndex?: number;
 }
 
 export class IntegrityService {
@@ -76,13 +77,14 @@ export class IntegrityService {
           const metadata = await provider.getFileMetadata(account, chunk0.providerFileId);
           
           if (metadata.size === 0) {
-            return { valid: false, reason: 'Cloud probe failed: Chunk 0 is 0 bytes on provider' };
+            return { valid: false, reason: 'Cloud probe failed: Chunk 0 is 0 bytes on provider', failedChunkIndex: 0 };
           }
           
           if (metadata.size !== chunk0.chunkSize) {
             return { 
               valid: false, 
-              reason: `Cloud probe failed: Chunk 0 size mismatch (${metadata.size} vs ${chunk0.chunkSize})` 
+              reason: `Cloud probe failed: Chunk 0 size mismatch (${metadata.size} vs ${chunk0.chunkSize})`,
+              failedChunkIndex: 0
             };
           }
           
@@ -115,7 +117,11 @@ export class IntegrityService {
       const result = await this.checkFileIntegrity(job.fileId, true);
       if (!result.valid) {
         corruptedCount++;
-        const errorMessage = `INTEGRITY_FAILURE: ${result.reason}`;
+        let errorMessage = `INTEGRITY_FAILURE: ${result.reason}`;
+        
+        if (result.failedChunkIndex !== undefined) {
+          errorMessage += ` [chunk:${result.failedChunkIndex}]`;
+        }
         logger.warn({ job: job.id, filename: job.filename, reason: result.reason }, 'Audit found corrupted file');
         
         // Mark as failed in dashboard
