@@ -137,7 +137,7 @@ export class ChunkRepository {
       fileId,
       filename: file.filename,
       mimeType: file.mime_type,
-      size: file.size,
+      size: Number(file.size),
       totalChunks: chunks.length,
       chunkSize: decryptedChunkSize,
       encryptionKey: file.encryption_key,

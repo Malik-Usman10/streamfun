@@ -3,6 +3,10 @@ import pg from 'pg';
 import { appConfig } from '../config/index.js';
 import logger from '../utils/logger.js';
 
+// Force pg to return BIGINT (OID 20) as JavaScript Number instead of string.
+// JS Number is safe up to 2^53 (~9 PB), which is fine for file sizes.
+pg.types.setTypeParser(20, (val: string) => parseInt(val, 10));
+
 const { Pool } = pg;
 
 export const pool = new Pool({

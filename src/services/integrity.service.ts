@@ -38,7 +38,9 @@ export class IntegrityService {
         return { valid: false, reason: 'File record not found or not chunked' };
       }
 
-      const expectedChunks = Math.ceil(file.size / file.chunkSize);
+      const fileSize = Number(file.size);
+      const chunkSize = Number(file.chunkSize);
+      const expectedChunks = Math.ceil(fileSize / chunkSize);
       const actualChunks = file.chunks.length;
 
       // 1. Check chunk count
@@ -52,8 +54,8 @@ export class IntegrityService {
 
       // 2. Check total stored size in DB
       // Expected stored size = fileSize + (num_chunks * auth_tag_size)
-      const expectedStoredSize = file.size + (actualChunks * this.AUTH_TAG_SIZE);
-      const actualStoredSize = file.chunks.reduce((sum, c) => sum + c.chunkSize, 0);
+      const expectedStoredSize = fileSize + (actualChunks * this.AUTH_TAG_SIZE);
+      const actualStoredSize = file.chunks.reduce((sum, c) => sum + Number(c.chunkSize), 0);
 
       if (Math.abs(actualStoredSize - expectedStoredSize) > 1024) { // 1KB tolerance
         return {
