@@ -72,11 +72,15 @@ async function start() {
           // This prevents dev/test instances (with ENABLE_AUTO_SCAN=false) from
           // connecting to the shared Redis and stealing upload jobs they can't process.
           if (appConfig.upload.autoScan) {
-            // Start BullMQ worker
-            ctx.queue.startWorker();
-
-            // Recover any interrupted uploads from before last restart
+            // CRITICAL: Drain all stale Redis jobs FIRST, then re-enqueue from DB
+            // with correct priority routing, then start workers.
+            // If workers start first, they grab old Redis jobs before we can
+            // re-route high-progress repairs to the priority queue.
+            await ctx.queue.drainStaleJobs();
             await ctx.queue.recoverInterrupted();
+
+            // NOW start BullMQ workers (queues are clean and correctly routed)
+            ctx.queue.startWorker();
 
             // Start watching /uploads directory
             await ctx.scanner.start();

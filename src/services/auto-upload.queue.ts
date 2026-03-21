@@ -153,10 +153,8 @@ export class AutoUploadQueue {
       logger.info({ count: recentJobs.length }, 'Enqueued recent jobs for background integrity audit');
     }
 
-    // First, drain all non-active BullMQ jobs from the queue.
-    // This ensures stale jobs (e.g., from a previous code version with timestamp-based IDs)
-    // are cleaned up before we re-enqueue with the new stable IDs.
-    await this.drainStaleJobs();
+    // NOTE: drainStaleJobs() is called separately from index.ts BEFORE this method,
+    // ensuring all stale Redis jobs are cleared before we re-enqueue from DB.
 
     const interrupted = await this.scanJobRepo.findByStatus('uploading');
     const pending = await this.scanJobRepo.findByStatus('pending');
@@ -211,19 +209,24 @@ export class AutoUploadQueue {
     }
   }
 
-  /** Remove all non-active BullMQ jobs so we can re-enqueue with stable IDs */
-  private async drainStaleJobs(): Promise<void> {
+  /** Remove all non-active BullMQ jobs from ALL queues so we can re-enqueue with correct routing */
+  async drainStaleJobs(): Promise<void> {
     try {
       const states: Array<'waiting' | 'completed' | 'failed' | 'delayed'> = ['waiting', 'completed', 'failed', 'delayed'];
       let removed = 0;
-      for (const state of states) {
-        const jobs = await this.queue.getJobs([state]);
-        for (const job of jobs) {
-          try { await job.remove(); removed++; } catch { /* job may have been picked up */ }
+
+      // Drain all three queues
+      for (const q of [this.queue, this.priorityQueue, this.integrityQueue]) {
+        for (const state of states) {
+          const jobs = await q.getJobs([state]);
+          for (const job of jobs) {
+            try { await job.remove(); removed++; } catch { /* job may have been picked up */ }
+          }
         }
       }
+
       if (removed > 0) {
-        logger.info({ removed }, 'Drained stale BullMQ jobs on startup');
+        logger.info({ removed }, 'Drained stale BullMQ jobs from all queues on startup');
       }
     } catch (err) {
       logger.warn({ err }, 'Failed to drain stale BullMQ jobs (non-fatal)');
