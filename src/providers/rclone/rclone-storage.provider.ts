@@ -366,23 +366,26 @@ export class RcloneStorageProvider implements IStorageProvider {
       : `${remoteName}:${fileId}`;
 
     try {
-      const { stdout } = await execAsync(`rclone lsjson "${remoteFilePath}"`, {
-        timeout: 10000,
+      // --stat treats the path as a FILE and returns its metadata directly.
+      // Without --stat, lsjson treats the path as a DIRECTORY and lists contents,
+      // which returns [] for files (causing false "File not found" errors).
+      const { stdout } = await execAsync(`rclone lsjson "${remoteFilePath}" --stat`, {
+        timeout: 30000, // 30s for slow providers like Blomp
       });
 
-      const files = JSON.parse(stdout) as Array<{
+      // --stat returns a single JSON object, not an array
+      const file = JSON.parse(stdout) as {
         Path: string;
         Name: string;
         Size: number;
         MimeType: string;
         ModTime: string;
-      }>;
+      };
 
-      if (files.length === 0) {
+      if (!file || !file.Name) {
         throw new Error('File not found');
       }
 
-      const file = files[0];
       return {
         id: fileId,
         name: file.Name,

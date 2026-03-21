@@ -193,6 +193,11 @@ export class AutoUploadQueue {
         await this.scanJobRepo.resetForRetry(job.id);
       }
       
+      // Only mark as recovery if the job actually has progress (was genuinely
+      // interrupted mid-upload). Fresh pending/skipped 0% jobs go to the regular
+      // queue so they don't flood the priority queue and block real repairs.
+      const hasProgress = (job.progress ?? 0) > 0;
+
       await this.enqueue({
         scanJobId: job.id,
         sourcePath: job.sourcePath,
@@ -200,7 +205,7 @@ export class AutoUploadQueue {
         fileSize: job.fileSize,
         mimeType: job.mimeType ?? 'application/octet-stream',
         directoryName: job.directoryName ?? undefined,
-        isRecovery: true, // Highlight prioritized recovery
+        isRecovery: hasProgress,
         progress: job.progress
       });
     }

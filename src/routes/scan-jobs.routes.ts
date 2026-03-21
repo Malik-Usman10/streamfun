@@ -100,6 +100,7 @@ export function createScanJobRoutes(
         fileSize: job.fileSize,
         mimeType: job.mimeType ?? 'application/octet-stream',
         directoryName: job.directoryName ?? undefined,
+        isRecovery: true, // Route retries to priority queue
         progress: retryProgress,
       });
 
