@@ -50,6 +50,7 @@ export interface Config {
     autoScan: boolean;
     uploadConcurrency: number;
     integrityConcurrency: number;
+    priorityConcurrency: number;
   };
   rateLimit: {
     window: number;
@@ -122,6 +123,7 @@ export const appConfig: Config = {
     autoScan: getEnvBoolean('ENABLE_AUTO_SCAN', true),
     uploadConcurrency: getEnvNumber('UPLOAD_CONCURRENCY', 2),
     integrityConcurrency: getEnvNumber('INTEGRITY_CONCURRENCY', 5),
+    priorityConcurrency: getEnvNumber('PRIORITY_CONCURRENCY', 2),
   },
   rateLimit: {
     window: getEnvNumber('RATE_LIMIT_WINDOW', 60),

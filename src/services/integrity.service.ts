@@ -66,34 +66,55 @@ export class IntegrityService {
       }
 
       // 3. Proactive Cloud Probe (Check chunk_0 existence and size)
+      //    Uses retry-with-backoff to handle eventual consistency on providers like Blomp.
       if (probeCloud && file.chunks.length > 0) {
         const chunk0 = file.chunks[0];
-        try {
-          const provider = this.providerFactory.getProvider(chunk0.providerType);
-          const account = await this.accountRepo.findById(chunk0.accountId);
-          
-          if (!account) {
-            return { valid: false, reason: `Account ${chunk0.accountId} not found for cloud probe` };
-          }
+        const provider = this.providerFactory.getProvider(chunk0.providerType);
+        const account = await this.accountRepo.findById(chunk0.accountId);
+        
+        if (!account) {
+          return { valid: false, reason: `Account ${chunk0.accountId} not found for cloud probe` };
+        }
 
-          const metadata = await provider.getFileMetadata(account, chunk0.providerFileId);
-          
-          if (metadata.size === 0) {
-            return { valid: false, reason: 'Cloud probe failed: Chunk 0 is 0 bytes on provider', failedChunkIndex: 0 };
+        const PROBE_RETRIES = 3;
+        const PROBE_DELAYS = [5000, 15000, 30000]; // 5s, 15s, 30s
+        let lastProbeError: string | null = null;
+
+        for (let attempt = 0; attempt < PROBE_RETRIES; attempt++) {
+          try {
+            logger.debug({ fileId, providerFileId: chunk0.providerFileId, attempt: attempt + 1 }, 'Cloud probe attempt');
+            const metadata = await provider.getFileMetadata(account, chunk0.providerFileId);
+            
+            if (metadata.size === 0) {
+              return { valid: false, reason: 'Cloud probe failed: Chunk 0 is 0 bytes on provider', failedChunkIndex: 0 };
+            }
+            
+            if (Number(metadata.size) !== Number(chunk0.chunkSize)) {
+              return { 
+                valid: false, 
+                reason: `Cloud probe failed: Chunk 0 size mismatch (${metadata.size} vs ${chunk0.chunkSize})`,
+                failedChunkIndex: 0
+              };
+            }
+            
+            logger.debug({ fileId, filename: file.filename }, 'Integrity cloud probe successful');
+            lastProbeError = null;
+            break; // Success — exit the retry loop
+          } catch (err: any) {
+            lastProbeError = err.message;
+            logger.warn({ err: err.message, fileId, attempt: attempt + 1, maxRetries: PROBE_RETRIES }, 'Cloud probe attempt failed');
+            
+            if (attempt < PROBE_RETRIES - 1) {
+              const delay = PROBE_DELAYS[attempt];
+              logger.info({ fileId, delayMs: delay }, 'Waiting before next cloud probe retry (eventual consistency)');
+              await new Promise(r => setTimeout(r, delay));
+            }
           }
-          
-          if (metadata.size !== chunk0.chunkSize) {
-            return { 
-              valid: false, 
-              reason: `Cloud probe failed: Chunk 0 size mismatch (${metadata.size} vs ${chunk0.chunkSize})`,
-              failedChunkIndex: 0
-            };
-          }
-          
-          logger.debug({ fileId, filename: file.filename }, 'Integrity cloud probe successful');
-        } catch (err: any) {
-          logger.error({ err: err.message, fileId }, 'Integrity cloud probe failed');
-          return { valid: false, reason: `Cloud probe failed: ${err.message}` };
+        }
+
+        if (lastProbeError) {
+          logger.error({ fileId, err: lastProbeError }, 'Cloud probe failed after all retries');
+          return { valid: false, reason: `Cloud probe failed: ${lastProbeError}` };
         }
       }
 

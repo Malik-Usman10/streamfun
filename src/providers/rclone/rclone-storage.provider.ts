@@ -361,11 +361,11 @@ export class RcloneStorageProvider implements IStorageProvider {
     const remoteName = await this.getRemoteName(account);
     const remotePath = await this.getRemotePath(account);
 
-    try {
-      const remoteFilePath = remotePath
-        ? `${remoteName}:${remotePath}/${fileId}`
-        : `${remoteName}:${fileId}`;
+    const remoteFilePath = remotePath
+      ? `${remoteName}:${remotePath}/${fileId}`
+      : `${remoteName}:${fileId}`;
 
+    try {
       const { stdout } = await execAsync(`rclone lsjson "${remoteFilePath}"`, {
         timeout: 10000,
       });
@@ -392,7 +392,7 @@ export class RcloneStorageProvider implements IStorageProvider {
         modifiedAt: new Date(file.ModTime),
       };
     } catch (error: any) {
-      logger.error({ error: error.message, fileId }, 'Failed to get file metadata');
+      logger.error({ error: error.message, fileId, remoteFilePath }, 'Failed to get file metadata');
       throw new Error(`Failed to get file metadata: ${error.message}`);
     }
   }

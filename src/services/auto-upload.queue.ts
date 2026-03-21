@@ -16,6 +16,7 @@ import type { ProviderType } from '../types/index.js';
 import logger from '../utils/logger.js';
 
 const QUEUE_NAME = 'auto-upload';
+const PRIORITY_QUEUE_NAME = 'auto-upload-priority';
 const INTEGRITY_QUEUE_NAME = 'auto-upload-integrity';
 
 export interface AutoUploadJobData {
@@ -43,8 +44,10 @@ const redisConnection = {
 
 export class AutoUploadQueue {
   private queue: Queue<AutoUploadJobData>;
+  private priorityQueue: Queue<AutoUploadJobData>;
   private integrityQueue: Queue<IntegrityJobData>;
   private worker: Worker<AutoUploadJobData> | null = null;
+  private priorityWorker: Worker<AutoUploadJobData> | null = null;
   private integrityWorker: Worker<IntegrityJobData> | null = null;
 
   constructor(
@@ -56,6 +59,16 @@ export class AutoUploadQueue {
     private integrityService?: IntegrityService // Optional for backward compatibility in tests
   ) {
     this.queue = new Queue<AutoUploadJobData>(QUEUE_NAME, {
+      connection: redisConnection,
+      defaultJobOptions: {
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 30_000 },
+        removeOnComplete: { count: 100 },
+        removeOnFail: false,
+      },
+    });
+
+    this.priorityQueue = new Queue<AutoUploadJobData>(PRIORITY_QUEUE_NAME, {
       connection: redisConnection,
       defaultJobOptions: {
         attempts: 3,
@@ -84,21 +97,27 @@ export class AutoUploadQueue {
       ? Math.max(1, 100 - Math.floor(data.progress))
       : 100;
 
-    // Remove any previous completed/failed job with the same ID so rescan can re-enqueue
-    const existingJob = await this.queue.getJob(jobId);
-    if (existingJob) {
-      const state = await existingJob.getState();
-      if (state === 'completed' || state === 'failed') {
-        await existingJob.remove();
-      } else {
-        // Job is already waiting/active/delayed — don't duplicate
-        logger.info({ scanJobId: data.scanJobId, state }, 'Job already in queue, skipping enqueue');
-        return;
+    // Route high-progress (>=90%) or recovery jobs to the dedicated priority queue
+    const isPriority = data.isRecovery || (data.progress !== undefined && data.progress >= 90);
+    const targetQueue = isPriority ? this.priorityQueue : this.queue;
+
+    // Also check the other queue for duplicates
+    for (const q of [this.queue, this.priorityQueue]) {
+      const existingJob = await q.getJob(jobId);
+      if (existingJob) {
+        const state = await existingJob.getState();
+        if (state === 'completed' || state === 'failed') {
+          await existingJob.remove();
+        } else {
+          // Job is already waiting/active/delayed — don't duplicate
+          logger.info({ scanJobId: data.scanJobId, state, queue: q.name }, 'Job already in queue, skipping enqueue');
+          return;
+        }
       }
     }
 
-    await this.queue.add(`upload-${data.scanJobId}`, data, { jobId, priority });
-    logger.info({ scanJobId: data.scanJobId, filename: data.filename, priority }, 'Enqueued auto-upload job');
+    await targetQueue.add(`upload-${data.scanJobId}`, data, { jobId, priority });
+    logger.info({ scanJobId: data.scanJobId, filename: data.filename, priority, queue: targetQueue.name }, 'Enqueued auto-upload job');
   }
 
   /** Enqueue a file for integrity verification in the dedicated integrity queue */
@@ -226,6 +245,25 @@ export class AutoUploadQueue {
     );
 
     // 2. Integrity Audit Worker (Separate resource pool)
+    // 3. Priority Upload Worker (dedicated lane for repairs / near-complete files)
+    this.priorityWorker = new Worker<AutoUploadJobData>(
+      PRIORITY_QUEUE_NAME,
+      async (job: Job<AutoUploadJobData>) => {
+        logger.info({ jobId: job.id, scanJobId: job.data.scanJobId, filename: job.data.filename }, 'PRIORITY-UPLOAD: Worker picking up job');
+        try {
+          await this.processJob(job);
+        } catch (err: any) {
+          logger.error({ jobId: job.id, scanJobId: job.data.scanJobId, error: err.message }, 'PRIORITY-UPLOAD: Worker processing crashed');
+          throw err;
+        }
+      },
+      {
+        connection: redisConnection,
+        concurrency: appConfig.upload.priorityConcurrency,
+      }
+    );
+
+    // 4. Integrity Audit Worker (Separate resource pool)
     this.integrityWorker = new Worker<IntegrityJobData>(
       INTEGRITY_QUEUE_NAME,
       async (job: Job<IntegrityJobData>) => {
@@ -271,14 +309,19 @@ export class AutoUploadQueue {
       logger.error({ jobId: job?.id, scanJobId: job?.data.scanJobId, filename: job?.data.filename, err: err.message }, 'Auto-upload job failed');
     });
 
+    this.priorityWorker.on('failed', (job, err) => {
+      logger.error({ jobId: job?.id, scanJobId: job?.data.scanJobId, filename: job?.data.filename, err: err.message }, 'Priority upload job failed');
+    });
+
     this.integrityWorker.on('failed', (job, err) => {
       logger.error({ jobId: job?.id, scanJobId: job?.data.scanJobId, err: err.message }, 'Integrity check job failed');
     });
 
     logger.info({ 
-      uploadConcurrency: appConfig.upload.uploadConcurrency, 
+      uploadConcurrency: appConfig.upload.uploadConcurrency,
+      priorityConcurrency: appConfig.upload.priorityConcurrency,
       integrityConcurrency: appConfig.upload.integrityConcurrency 
-    }, 'Auto-upload workers started (Transfer + Integrity)');
+    }, 'Auto-upload workers started (Transfer + Priority + Integrity)');
   }
 
   private async processJob(job: Job<AutoUploadJobData>): Promise<void> {
@@ -504,8 +547,10 @@ export class AutoUploadQueue {
 
   async close(): Promise<void> {
     if (this.worker) await this.worker.close();
+    if (this.priorityWorker) await this.priorityWorker.close();
     if (this.integrityWorker) await this.integrityWorker.close();
     await this.queue.close();
+    await this.priorityQueue.close();
     await this.integrityQueue.close();
   }
 }
