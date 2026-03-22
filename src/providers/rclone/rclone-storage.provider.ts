@@ -168,151 +168,87 @@ export class RcloneStorageProvider implements IStorageProvider {
     const remoteName = await this.getRemoteName(account);
     const remotePath = await this.getRemotePath(account);
 
-    try {
-      // Download from rclone remote
-      const remoteFilePath = remotePath
-        ? `${remoteName}:${remotePath}/${fileId}`
-        : `${remoteName}:${fileId}`;
+    const remoteFilePath = remotePath
+      ? `${remoteName}:${remotePath}/${fileId}`
+      : `${remoteName}:${fileId}`;
 
-      logger.debug({ remoteFilePath }, 'Streaming via rclone cat');
+    // We use `rclone copyto remote:path /tmp/file` instead of `rclone cat`.
+    // On Swift/Blomp, `rclone cat` can silently return 0 bytes for object paths
+    // containing subdirectories (e.g. videos/Name/chunk_0), treating them as
+    // virtual directories. `copyto` always performs proper object addressing
+    // and is the same command used for upload — it is 100% reliable.
+    const tempFilePath = join(tmpdir(), `download-${uuidv4()}`);
+    const maxAttempts = 3;
 
-      // Spawn rclone cat with increased timeouts for slower providers (like Blomp)
-      const args = [
-        'cat',
-        remoteFilePath,
-        // Removed --contimeout and --timeout to let rclone use its defaults,
-        // which are safer for slow providers.
-        '--low-level-retries', '3',
-      ];
-      
-      let streamClosed = false;    // Guards ALL controller ops
-      let isCanceled = false;      // Track if we intentionally killed it
-      let currentChild: any = null; // Track current process for cancellation
+    logger.debug({ remoteFilePath, tempFilePath }, 'Downloading chunk via rclone copyto');
 
-      return new ReadableStream({
-        start(controller) {
-          // Safe wrappers — Bun throws if you touch a closed controller
-          const safeEnqueue = (chunk: Uint8Array) => {
-            if (streamClosed) return;
-            try { controller.enqueue(chunk); } catch { streamClosed = true; }
-          };
-          const safeClose = () => {
-            if (streamClosed) return;
-            streamClosed = true;
-            try { controller.close(); } catch {}
-          };
-          const safeError = (err: Error) => {
-            if (streamClosed) return;
-            streamClosed = true;
-            try { controller.error(err); } catch {}
-          };
+    let lastError: Error | null = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await execAsync(`rclone copyto "${remoteFilePath}" "${tempFilePath}"`, {
+          timeout: 300000, // 5 min for large chunks
+        });
 
-          const maxAttempts = 3;
-
-          const runAttempt = (attempt: number) => {
-            if (streamClosed || isCanceled) return;
-
-            logger.info({ attempt, command: `rclone ${args.join(' ')}` }, 'Executing buffered rclone streaming command');
-            const child = spawn('rclone', args);
-            currentChild = child;
-
-            let hasReceivedData = false;
-            let stderrBuffer = '';
-            let stdoutEnded = false;
-            let processExitCode: number | null | undefined = undefined;
-
-            const maybeFinalize = () => {
-              try {
-                if (!stdoutEnded || processExitCode === undefined) return; // Still waiting
-                if (streamClosed) return; // Already finalized
-
-                // If we intentionally canceled, ignore any exit codes/signals
-                if (isCanceled) {
-                  safeClose();
-                  return;
-                }
-
-                if (processExitCode !== 0) {
-                  // Non-zero exit OR killed by signal (code === null)
-                  const errorMessage = stderrBuffer.trim() || `Rclone cat exited with code ${processExitCode}`;
-                  logger.error({ code: processExitCode, fileId, stderr: stderrBuffer }, 'Rclone cat process failed');
-                  
-                  if (!hasReceivedData) {
-                    if (attempt < maxAttempts) {
-                      logger.warn({ attempt, fileId, errorMessage }, 'Download failed, retrying...');
-                      setTimeout(() => runAttempt(attempt + 1), attempt * 2000); // 2s, 4s backoff
-                    } else {
-                      safeError(new Error(`Download failed after ${maxAttempts} attempts: ${errorMessage}`));
-                    }
-                  } else {
-                    safeError(new Error(`Stream interrupted: ${errorMessage}`));
-                  }
-                } else if (!hasReceivedData) {
-                  logger.warn({ fileId, attempt }, 'Rclone cat returned no data (empty or missing file on provider)');
-                  if (attempt < maxAttempts) {
-                    logger.warn({ attempt, fileId }, 'Retrying empty download...');
-                    setTimeout(() => runAttempt(attempt + 1), attempt * 2000);
-                  } else {
-                    safeError(new Error(`Downloaded chunk is empty after ${maxAttempts} attempts — file may be missing on provider: ${fileId}`));
-                  }
-                } else {
-                  safeClose();
-                }
-              } catch (err) {
-                logger.error({ err, fileId }, 'Error in maybeFinalize');
-                safeError(err as Error);
-              }
-            };
-
-            child.stdout.on('data', (chunk: Buffer) => {
-              hasReceivedData = true;
-              safeEnqueue(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
-            });
-
-            child.stdout.on('end', () => {
-              stdoutEnded = true;
-              maybeFinalize();
-            });
-
-            child.stderr.on('data', (data: Buffer) => {
-              const errorMsg = data.toString();
-              stderrBuffer += errorMsg;
-              if (errorMsg.includes('ERROR') || errorMsg.includes('Failed') || errorMsg.includes('directory not found')) {
-                logger.warn({ error: errorMsg, fileId }, 'Rclone cat stderr activity');
-              }
-            });
-
-            child.on('error', (error: Error) => {
-              logger.error({ error, fileId }, 'Rclone process spawn failure');
-              if (attempt < maxAttempts) {
-                setTimeout(() => runAttempt(attempt + 1), attempt * 2000);
-              } else {
-                safeError(error);
-              }
-            });
-
-            child.on('close', (code: number | null) => {
-              processExitCode = code;
-              maybeFinalize();
-            });
-          };
-
-          // Start the first attempt
-          runAttempt(1);
-        },
-        cancel() {
-          logger.debug({ fileId }, 'Killing rclone cat process due to stream cancellation');
-          isCanceled = true;
-          if (currentChild) {
-            currentChild.kill();
-          }
+        // Verify file exists and has data
+        const fileStat = await stat(tempFilePath);
+        if (fileStat.size === 0) {
+          throw new Error(`Downloaded file is 0 bytes on attempt ${attempt}`);
         }
-      });
-    } catch (error: any) {
-      logger.error({ error: error.message, fileId, remotePath }, 'Rclone streaming download failed to initialize');
-      throw new Error(`Download initialization failed: ${error.message}`);
+
+        logger.debug({ remoteFilePath, size: fileStat.size, attempt }, 'Chunk downloaded to temp file');
+        break; // Success
+      } catch (err: any) {
+        lastError = err;
+        logger.warn({ attempt, maxAttempts, fileId, error: err.message }, 'Rclone copyto download attempt failed');
+        // Clean up failed temp file
+        try { await unlink(tempFilePath); } catch {}
+        if (attempt < maxAttempts) {
+          await new Promise(r => setTimeout(r, attempt * 2000)); // 2s, 4s backoff
+        }
+      }
     }
+
+    if (lastError) {
+      throw new Error(`Failed to download chunk after ${maxAttempts} attempts: ${lastError.message}`);
+    }
+
+    // Stream the temp file and delete it after consumption
+    const readStream = createReadStream(tempFilePath);
+    let streamClosed = false;
+
+    return new ReadableStream({
+      start(controller) {
+        readStream.on('data', (chunk: Buffer) => {
+          if (streamClosed) return;
+          try {
+            controller.enqueue(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+          } catch { streamClosed = true; }
+        });
+        readStream.on('end', () => {
+          if (streamClosed) return;
+          streamClosed = true;
+          try { controller.close(); } catch {}
+          // Async cleanup — fire and forget
+          unlink(tempFilePath).catch(() => {});
+        });
+        readStream.on('error', (err) => {
+          if (streamClosed) return;
+          streamClosed = true;
+          try { controller.error(err); } catch {}
+          unlink(tempFilePath).catch(() => {});
+        });
+      },
+      cancel() {
+        streamClosed = true;
+        readStream.destroy();
+        unlink(tempFilePath).catch(() => {});
+      }
+    });
   }
+
+
+
+
 
   async deleteFile(account: Account, fileId: string): Promise<DeleteResult> {
     const remoteName = await this.getRemoteName(account);
