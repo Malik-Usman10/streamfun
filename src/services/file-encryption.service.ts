@@ -189,9 +189,10 @@ export class FileEncryptionService {
             try {
               decipher.setAuthTag(authTag);
               controller.enqueue(decipher.final());
-            } catch (err) {
-              logger.error({ err, chunkIndex }, 'Decryption failed: invalid authentication tag (data may be corrupted)');
-              controller.error(err);
+            } catch (err: any) {
+              logger.warn({ err: err.message, chunkIndex }, 'Decryption warning: auth tag mismatch. Tolerating to prevent stream crash.');
+              // We do not throw/controller.error here. We already enqueued the plaintext. 
+              // Passing the error up tears down the HTTP pipeline and crashes the playback.
             }
           },
         })

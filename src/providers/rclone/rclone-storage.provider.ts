@@ -221,7 +221,11 @@ export class RcloneStorageProvider implements IStorageProvider {
         readStream.on('data', (chunk: Buffer) => {
           if (streamClosed) return;
           try {
-            controller.enqueue(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+            // Force a deep copy to prevent Node's internal slab pool overwriting
+            // the chunk before the Web Stream consumer asynchronously reads it.
+            const copy = new Uint8Array(chunk.length);
+            copy.set(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+            controller.enqueue(copy);
           } catch { streamClosed = true; }
         });
         readStream.on('end', () => {
