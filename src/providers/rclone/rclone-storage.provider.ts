@@ -180,24 +180,17 @@ export class RcloneStorageProvider implements IStorageProvider {
       const args = [
         'cat',
         remoteFilePath,
-        '--low-level-retries', '2',
-        '--contimeout', '30s',
-        '--timeout', '60s'
+        // Removed --contimeout and --timeout to let rclone use its defaults,
+        // which are safer for slow providers.
+        '--low-level-retries', '3',
       ];
       
-      logger.info({ command: `rclone ${args.join(' ')}` }, 'Executing buffered rclone streaming command');
-      const child = spawn('rclone', args);
-
-      let hasReceivedData = false;
-      let stderrBuffer = '';
       let streamClosed = false;    // Guards ALL controller ops
       let isCanceled = false;      // Track if we intentionally killed it
-      let stdoutEnded = false;     // stdout pipe finished
-      let processExitCode: number | null | undefined = undefined; // undefined = not yet exited
+      let currentChild: any = null; // Track current process for cancellation
 
       return new ReadableStream({
         start(controller) {
-
           // Safe wrappers — Bun throws if you touch a closed controller
           const safeEnqueue = (chunk: Uint8Array) => {
             if (streamClosed) return;
@@ -214,73 +207,105 @@ export class RcloneStorageProvider implements IStorageProvider {
             try { controller.error(err); } catch {}
           };
 
-          // Called when BOTH stdout has ended AND the process has closed.
-          // Only then do we know the full picture.
-          const maybeFinalize = () => {
-            try {
-              if (!stdoutEnded || processExitCode === undefined) return; // Still waiting
-              if (streamClosed) return; // Already finalized
+          const maxAttempts = 3;
 
-              // If we intentionally canceled, ignore any exit codes/signals
-              if (isCanceled) {
-                safeClose();
-                return;
-              }
+          const runAttempt = (attempt: number) => {
+            if (streamClosed || isCanceled) return;
 
-              if (processExitCode !== 0) {
-                // Non-zero exit OR killed by signal (code === null)
-                const errorMessage = stderrBuffer.trim() || `Rclone cat exited with code ${processExitCode}`;
-                logger.error({ code: processExitCode, fileId, stderr: stderrBuffer }, 'Rclone cat process failed');
-                
-                if (!hasReceivedData) {
-                  safeError(new Error(`Download failed: ${errorMessage}`));
-                } else {
-                  safeError(new Error(`Stream interrupted: ${errorMessage}`));
+            logger.info({ attempt, command: `rclone ${args.join(' ')}` }, 'Executing buffered rclone streaming command');
+            const child = spawn('rclone', args);
+            currentChild = child;
+
+            let hasReceivedData = false;
+            let stderrBuffer = '';
+            let stdoutEnded = false;
+            let processExitCode: number | null | undefined = undefined;
+
+            const maybeFinalize = () => {
+              try {
+                if (!stdoutEnded || processExitCode === undefined) return; // Still waiting
+                if (streamClosed) return; // Already finalized
+
+                // If we intentionally canceled, ignore any exit codes/signals
+                if (isCanceled) {
+                  safeClose();
+                  return;
                 }
-              } else if (!hasReceivedData) {
-                logger.warn({ fileId }, 'Rclone cat returned no data (empty or missing file on provider)');
-                safeError(new Error(`Downloaded chunk is empty — file may be missing on provider: ${fileId}`));
-              } else {
-                safeClose();
+
+                if (processExitCode !== 0) {
+                  // Non-zero exit OR killed by signal (code === null)
+                  const errorMessage = stderrBuffer.trim() || `Rclone cat exited with code ${processExitCode}`;
+                  logger.error({ code: processExitCode, fileId, stderr: stderrBuffer }, 'Rclone cat process failed');
+                  
+                  if (!hasReceivedData) {
+                    if (attempt < maxAttempts) {
+                      logger.warn({ attempt, fileId, errorMessage }, 'Download failed, retrying...');
+                      setTimeout(() => runAttempt(attempt + 1), attempt * 2000); // 2s, 4s backoff
+                    } else {
+                      safeError(new Error(`Download failed after ${maxAttempts} attempts: ${errorMessage}`));
+                    }
+                  } else {
+                    safeError(new Error(`Stream interrupted: ${errorMessage}`));
+                  }
+                } else if (!hasReceivedData) {
+                  logger.warn({ fileId, attempt }, 'Rclone cat returned no data (empty or missing file on provider)');
+                  if (attempt < maxAttempts) {
+                    logger.warn({ attempt, fileId }, 'Retrying empty download...');
+                    setTimeout(() => runAttempt(attempt + 1), attempt * 2000);
+                  } else {
+                    safeError(new Error(`Downloaded chunk is empty after ${maxAttempts} attempts — file may be missing on provider: ${fileId}`));
+                  }
+                } else {
+                  safeClose();
+                }
+              } catch (err) {
+                logger.error({ err, fileId }, 'Error in maybeFinalize');
+                safeError(err as Error);
               }
-            } catch (err) {
-              logger.error({ err, fileId }, 'Error in maybeFinalize');
-              safeError(err as Error);
-            }
+            };
+
+            child.stdout.on('data', (chunk: Buffer) => {
+              hasReceivedData = true;
+              safeEnqueue(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+            });
+
+            child.stdout.on('end', () => {
+              stdoutEnded = true;
+              maybeFinalize();
+            });
+
+            child.stderr.on('data', (data: Buffer) => {
+              const errorMsg = data.toString();
+              stderrBuffer += errorMsg;
+              if (errorMsg.includes('ERROR') || errorMsg.includes('Failed') || errorMsg.includes('directory not found')) {
+                logger.warn({ error: errorMsg, fileId }, 'Rclone cat stderr activity');
+              }
+            });
+
+            child.on('error', (error: Error) => {
+              logger.error({ error, fileId }, 'Rclone process spawn failure');
+              if (attempt < maxAttempts) {
+                setTimeout(() => runAttempt(attempt + 1), attempt * 2000);
+              } else {
+                safeError(error);
+              }
+            });
+
+            child.on('close', (code: number | null) => {
+              processExitCode = code;
+              maybeFinalize();
+            });
           };
 
-          child.stdout.on('data', (chunk: Buffer) => {
-            hasReceivedData = true;
-            safeEnqueue(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
-          });
-
-          child.stdout.on('end', () => {
-            stdoutEnded = true;
-            maybeFinalize();
-          });
-
-          child.stderr.on('data', (data: Buffer) => {
-            const errorMsg = data.toString();
-            stderrBuffer += errorMsg;
-            if (errorMsg.includes('ERROR') || errorMsg.includes('Failed') || errorMsg.includes('directory not found')) {
-              logger.warn({ error: errorMsg, fileId }, 'Rclone cat stderr activity');
-            }
-          });
-
-          child.on('error', (error: Error) => {
-            logger.error({ error, fileId }, 'Rclone process spawn failure');
-            safeError(error);
-          });
-
-          child.on('close', (code: number | null) => {
-            processExitCode = code;
-            maybeFinalize();
-          });
+          // Start the first attempt
+          runAttempt(1);
         },
         cancel() {
           logger.debug({ fileId }, 'Killing rclone cat process due to stream cancellation');
           isCanceled = true;
-          child.kill();
+          if (currentChild) {
+            currentChild.kill();
+          }
         }
       });
     } catch (error: any) {
