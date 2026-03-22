@@ -107,13 +107,14 @@ export class FileEncryptionService {
     encryptedChunk: Buffer,
     encryptionKey: string,
     iv: string,
-    chunkIndex: number
+    chunkIndex: number,
+    chunkSize: number = appConfig.upload.chunkSize
   ): Promise<Buffer> {
     try {
       const fileKey = await this.decryptKey(Buffer.from(encryptionKey, 'base64'));
       const ivBuffer = Buffer.from(iv, 'base64');
       
-      const chunkIv = this.adjustIvForChunk(ivBuffer, chunkIndex);
+      const chunkIv = this.adjustIvForChunk(ivBuffer, chunkIndex, chunkSize);
       const decipher = crypto.createDecipheriv(this.algorithm, fileKey, chunkIv) as crypto.DecipherGCM;
       
       if (encryptedChunk.length < 16) {
@@ -135,12 +136,13 @@ export class FileEncryptionService {
     encryptedStream: ReadableStream,
     encryptionKey: string,
     iv: string,
-    chunkIndex: number
+    chunkIndex: number,
+    chunkSize: number = appConfig.upload.chunkSize
   ): Promise<ReadableStream> {
     try {
       const fileKey = await this.decryptKey(Buffer.from(encryptionKey, 'base64'));
       const ivBuffer = Buffer.from(iv, 'base64');
-      const chunkIv = this.adjustIvForChunk(ivBuffer, chunkIndex);
+      const chunkIv = this.adjustIvForChunk(ivBuffer, chunkIndex, chunkSize);
       const decipher = crypto.createDecipheriv(this.algorithm, fileKey, chunkIv) as crypto.DecipherGCM;
 
       let authTag: Buffer | null = null;
@@ -157,13 +159,21 @@ export class FileEncryptionService {
               if (authTag) {
                 controller.enqueue(decipher.update(authTag));
               }
-              authTag = buffer.slice(-authTagSize);
+              // DEEP COPY REQUIRED: Forces a new Buffer allocation that doesn't share memory pool
+              // with the incoming stream chunk, which might be recycled asynchronously.
+              const tagSlice = buffer.slice(-authTagSize);
+              authTag = Buffer.allocUnsafe(authTagSize);
+              tagSlice.copy(authTag);
+              
               controller.enqueue(decipher.update(buffer.slice(0, -authTagSize)));
             } else {
               if (authTag) {
                 const combined = Buffer.concat([authTag, buffer]);
                 if (combined.length >= authTagSize) {
-                  authTag = combined.slice(-authTagSize);
+                  const tagSlice = combined.slice(-authTagSize);
+                  authTag = Buffer.allocUnsafe(authTagSize);
+                  tagSlice.copy(authTag);
+                  
                   controller.enqueue(decipher.update(combined.slice(0, -authTagSize)));
                 } else {
                   authTag = combined;
@@ -203,9 +213,8 @@ export class FileEncryptionService {
     }
   }
 
-  private adjustIvForChunk(iv: Buffer, chunkIndex: number): Buffer {
+  private adjustIvForChunk(iv: Buffer, chunkIndex: number, chunkSize: number): Buffer {
     const chunkIv = Buffer.from(iv);
-    const chunkSize = appConfig.upload.chunkSize;
     const blockOffset = Math.floor((chunkIndex * chunkSize) / 16);
     
     // Add block offset to IV counter
@@ -264,7 +273,7 @@ export class FileEncryptionService {
         const ivBuffer = Buffer.from(iv, 'base64');
 
         // Adjust IV for chunk position
-        const chunkIv = this.adjustIvForChunk(ivBuffer, chunkIndex);
+        const chunkIv = this.adjustIvForChunk(ivBuffer, chunkIndex, appConfig.upload.chunkSize);
 
         const cipher = crypto.createCipheriv(this.algorithm, fileKey, chunkIv) as crypto.CipherGCM;
 

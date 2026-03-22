@@ -266,7 +266,8 @@ export class ChunkManager {
           encryptedStream,
           fileRecord.encryptionKey,
           fileRecord.iv,
-          chunkIndex
+          chunkIndex,
+          fileRecord.chunkSize
         );
       }
 
