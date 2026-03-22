@@ -226,6 +226,11 @@ export class FileRepository {
       values.push((data as any).thumbnailData);
     }
 
+    if ((data as any).chunkSize !== undefined) {
+      fields.push(`chunk_size = $${paramIndex++}`);
+      values.push((data as any).chunkSize);
+    }
+
     fields.push('updated_at = NOW()');
     values.push(id);
 

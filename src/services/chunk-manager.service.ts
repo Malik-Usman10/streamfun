@@ -559,6 +559,7 @@ export class ChunkManager {
       encryptionIv: iv,
       category,
       collectionName,
+      chunkSize: params.chunkSize,
       uploadedAt: new Date(),
     });
 
@@ -634,7 +635,7 @@ export class ChunkManager {
     const storagePath = generateStoragePath({
       category: (metadata.category as 'videos' | 'images') || 'videos',
       collectionName: metadata.collectionName || metadata.filename,
-      filename: `chunk_${chunkIndex}`,
+      filename: metadata.filename,
       chunkIndex,
       remoteName: '', // Will be set by provider
     });
