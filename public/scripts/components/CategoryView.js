@@ -207,7 +207,7 @@ class CategoryView {
       // Fetch real categories and standalone files in parallel
       const [categories, standaloneFiles] = await Promise.all([
         api.fetchCategories(type),
-        api.fetchFiles({ type, category: 'Uncategorized' })
+        api.fetchFiles({ type, category: 'Uncategorized', limit: 1000 })
       ]);
 
       this.categories = categories || [];

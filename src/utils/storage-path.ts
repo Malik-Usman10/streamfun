@@ -63,11 +63,19 @@ export function generateStoragePath(options: {
   }
   
   if (category === 'videos') {
-    const sanitizedName = collectionName ? sanitizeFolderName(collectionName) : sanitizeFolderName(filename);
+    const sanitizedCollection = collectionName ? sanitizeFolderName(collectionName) : null;
+    const sanitizedFile = sanitizeFolderName(filename);
+    
+    // If categorical: videos/{collection}/{filename}/chunk_{index}
+    // If standalone: videos/{filename}/chunk_{index}
+    const folderPath = sanitizedCollection 
+      ? `${sanitizedCollection}/${sanitizedFile}`
+      : sanitizedFile;
+
     if (chunkIndex !== undefined) {
-      return `${basePath}videos/${sanitizedName}/chunk_${chunkIndex}`;
+      return `${basePath}videos/${folderPath}/chunk_${chunkIndex}`;
     }
-    return `${basePath}videos/${sanitizedName}`;
+    return `${basePath}videos/${folderPath}`;
   } else {
     // Images
     const collection = collectionName || generateDefaultCollectionName();

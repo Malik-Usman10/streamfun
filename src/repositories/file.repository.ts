@@ -30,17 +30,17 @@ export interface FileListOptions {
 }
 
 export class FileRepository {
-  async create(data: CreateFileData): Promise<FileRecord> {
+  async create(data: CreateFileData & { chunkSize?: number }): Promise<FileRecord> {
     const query = data.id
       ? `INSERT INTO files 
          (id, filename, mime_type, size, provider_type, account_id, provider_file_id, 
-          is_chunked, encryption_key, encryption_iv, category, collection_name, thumbnail_data, metadata, uploaded_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+          is_chunked, encryption_key, encryption_iv, category, collection_name, chunk_size, thumbnail_data, metadata, uploaded_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
          RETURNING *`
       : `INSERT INTO files 
          (filename, mime_type, size, provider_type, account_id, provider_file_id, 
-          is_chunked, encryption_key, encryption_iv, category, collection_name, thumbnail_data, metadata, uploaded_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+          is_chunked, encryption_key, encryption_iv, category, collection_name, chunk_size, thumbnail_data, metadata, uploaded_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
          RETURNING *`;
 
     const params = data.id
@@ -57,6 +57,7 @@ export class FileRepository {
         data.encryptionIv,
         data.category,
         data.collectionName,
+        data.chunkSize || 10485760,
         data.thumbnailData,
         data.metadata ? JSON.stringify(data.metadata) : null,
         data.uploadedAt,
@@ -73,6 +74,7 @@ export class FileRepository {
         data.encryptionIv,
         data.category,
         data.collectionName,
+        data.chunkSize || 10485760,
         data.thumbnailData,
         data.metadata ? JSON.stringify(data.metadata) : null,
         data.uploadedAt,
@@ -271,6 +273,7 @@ export class FileRepository {
       encryptionIv: row.encryption_iv,
       category: row.category,
       collectionName: row.collection_name,
+      chunkSize: row.chunk_size,
       thumbnailData: row.thumbnail_data,
       metadata: row.metadata,
       uploadedAt: row.uploaded_at,

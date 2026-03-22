@@ -51,6 +51,7 @@ export interface FileRecord {
   encryptionIv?: string;
   category?: string;
   collectionName?: string;
+  chunkSize?: number;
   thumbnailData?: string;
   metadata?: Record<string, any>;
   uploadedAt: Date;
