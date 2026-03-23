@@ -16,6 +16,7 @@ class FullPageDashboard {
     this.sidebarCollapsed = false;
     this.remoteListComponent = null;
     this.selectedFile = null;
+    this.expandedGroups = new Set(); // Track which directory groups are expanded
   }
 
   /**
@@ -1114,42 +1115,100 @@ class FullPageDashboard {
       set('#au-stat-completed', stats.completed);
       set('#au-stat-failed', stats.failed);
 
-      // Active list (pending + uploading + verifying)
+      // Active list (pending + uploading + verifying) - GROUP BY DIRECTORY
       const active = jobs.filter(j => j.status === 'pending' || j.status === 'uploading' || j.status === 'verifying');
       const activeEl = content.querySelector('#au-active-list');
+      
       if (activeEl) {
         if (active.length === 0) {
           activeEl.innerHTML = '<p style="color:var(--text-secondary);">No active uploads.</p>';
         } else {
-          activeEl.innerHTML = active.map(j => `
-            <div style="margin-bottom:1.25rem;">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.4rem;">
-                <span style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%;">${j.filename}</span>
-                <span style="font-size:0.8rem;color:var(--text-secondary);">${j.directoryName ? '📁 ' + j.directoryName + ' · ' : ''}${this._formatBytes(j.fileSize)}</span>
-              </div>
-              <div style="height:6px;background:var(--bg-tertiary);border-radius:99px;overflow:hidden;">
-                <div style="height:100%;width:${j.progress}%;background:var(--color-primary);border-radius:99px;transition:width 0.5s;"></div>
-              </div>
-              <div style="display:flex;justify-content:space-between;margin-top:0.3rem;">
-                <span style="font-size:0.75rem;color:var(--text-secondary);">${j.status === 'verifying' ? '🔍 Verifying...' : (j.status === 'uploading' ? '⬆ Uploading' : (j.providerType ? '🔄 Initializing...' : '⏳ Queued'))} · ${j.providerType ?? '—'}</span>
-                <span style="font-size:0.75rem;color:var(--color-primary);">${j.progress}%</span>
-              </div>
-              ${j.status === 'pending' ? `
-                <div style="text-align:right;margin-top:0.2rem;">
-                  <button class="au-remove-btn" data-id="${j.id}" style="background:none;border:none;color:var(--color-error);font-size:0.7rem;cursor:pointer;padding:0;text-decoration:underline;">Remove from Queue</button>
-                </div>
-              ` : ''}
-            </div>
-          `).join('');
+          // Grouping logic
+          const groups = new Map();
+          active.forEach(j => {
+            const dir = j.directoryName || 'Other / Root';
+            if (!groups.has(dir)) groups.set(dir, []);
+            groups.get(dir).push(j);
+          });
 
-          // Add remove handlers
-          activeEl.querySelectorAll('.au-remove-btn').forEach(btn => {
-            btn.addEventListener('click', async (e) => {
-              e.preventDefault();
-              const id = btn.dataset.id;
-              if (confirm('Are you sure you want to remove this file from the upload queue?')) {
-                await fetch(`/api/scan-jobs/${id}`, { method: 'DELETE', credentials: 'include' });
-                await this._refreshAutoUpload(content);
+          activeEl.innerHTML = Array.from(groups.entries()).map(([dirName, dirJobs]) => {
+            const isExpanded = this.expandedGroups.has(dirName);
+            const totalFiles = dirJobs.length;
+            const avgProgress = Math.round(dirJobs.reduce((sum, j) => sum + (j.progress || 0), 0) / totalFiles);
+            const statusCounts = dirJobs.reduce((acc, j) => {
+              acc[j.status] = (acc[j.status] || 0) + 1;
+              return acc;
+            }, {});
+
+            const statusSummary = [];
+            if (statusCounts.uploading) statusSummary.push(`${statusCounts.uploading} ⬆`);
+            if (statusCounts.verifying) statusSummary.push(`${statusCounts.verifying} 🔍`);
+            if (statusCounts.pending) statusSummary.push(`${statusCounts.pending} ⏳`);
+
+            return `
+              <div class="au-group ${isExpanded ? 'expanded' : ''}" data-dir="${dirName}">
+                <div class="au-group-header" style="display:flex;align-items:center;justify-content:space-between;padding:0.75rem;background:rgba(255,255,255,0.03);border-radius:8px;cursor:pointer;margin-bottom:0.5rem;transition:background 0.2s;">
+                  <div style="display:flex;align-items:center;gap:0.75rem;flex:1;min-width:0;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;flex-shrink:0;color:var(--color-primary);">
+                      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                    </svg>
+                    <div style="flex:1;min-width:0;">
+                      <div style="font-weight:600;display:flex;align-items:center;gap:0.5rem;">
+                         <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${dirName}</span>
+                         <span style="font-size:0.75rem;color:var(--text-tertiary);font-weight:400;">(${totalFiles} files)</span>
+                      </div>
+                      <div style="font-size:0.7rem;color:var(--text-secondary);margin-top:0.2rem;">${statusSummary.join(' · ')}</div>
+                    </div>
+                  </div>
+                  
+                  <div style="display:flex;align-items:center;gap:1rem;">
+                    <div style="width:100px;height:4px;background:var(--bg-tertiary);border-radius:99px;overflow:hidden;flex-shrink:0;">
+                      <div style="height:100%;width:${avgProgress}%;background:var(--color-primary);border-radius:99px;"></div>
+                    </div>
+                    <span style="font-size:0.8rem;width:35px;text-align:right;">${avgProgress}%</span>
+                    <svg class="au-group-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;transition:transform 0.3s;${isExpanded ? 'transform:rotate(180deg);' : ''}">
+                      <polyline points="6 9 12 15 18 9"></polyline>
+                    </svg>
+                  </div>
+                </div>
+
+                <!-- Group Content (Files) - Only rendered fully if expanded, or simplified list for limit -->
+                <div class="au-group-content" style="padding-left:1.5rem;display:${isExpanded ? 'block' : 'none'};">
+                  ${dirJobs.slice(0, 50).map(j => `
+                    <div style="margin-bottom:0.75rem;padding:0.5rem;border-left:2px solid var(--bg-tertiary);">
+                      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.25rem;">
+                        <span style="font-size:0.85rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:70%;">${j.filename}</span>
+                        <span style="font-size:0.75rem;color:var(--text-secondary);">${this._formatBytes(j.fileSize)}</span>
+                      </div>
+                      <div style="height:4px;background:var(--bg-tertiary);border-radius:99px;overflow:hidden;">
+                        <div style="height:100%;width:${j.progress}%;background:var(--color-primary);border-radius:99px;"></div>
+                      </div>
+                    </div>
+                  `).join('')}
+                  ${dirJobs.length > 50 ? `<div style="font-size:0.75rem;color:var(--text-tertiary);padding:0.5rem;text-align:center;">... and ${dirJobs.length - 50} more files</div>` : ''}
+                </div>
+              </div>
+            `;
+          }).join('');
+
+          // Add toggle handlers
+          activeEl.querySelectorAll('.au-group-header').forEach(header => {
+            header.addEventListener('click', () => {
+              const group = header.parentElement;
+              const dir = group.dataset.dir;
+              const content = group.querySelector('.au-group-content');
+              const chevron = group.querySelector('.au-group-chevron');
+              
+              if (this.expandedGroups.has(dir)) {
+                this.expandedGroups.delete(dir);
+                content.style.display = 'none';
+                chevron.style.transform = 'rotate(0deg)';
+                group.classList.remove('expanded');
+              } else {
+                this.expandedGroups.add(dir);
+                content.style.display = 'block';
+                chevron.style.transform = 'rotate(180deg)';
+                group.classList.add('expanded');
               }
             });
           });
