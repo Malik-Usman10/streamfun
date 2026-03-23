@@ -1100,12 +1100,14 @@ class FullPageDashboard {
 
   async _refreshAutoUpload(content) {
     try {
-      const [statsRes, jobsRes] = await Promise.all([
+      const [statsRes, groupsRes, activeRes] = await Promise.all([
         fetch('/api/scan-jobs/stats', { credentials: 'include' }),
-        fetch('/api/scan-jobs?limit=500', { credentials: 'include' }), // Increased limit for better visibility
+        fetch('/api/scan-jobs/groups', { credentials: 'include' }),
+        fetch('/api/scan-jobs?status=uploading,verifying&limit=100', { credentials: 'include' }),
       ]);
       const stats = await statsRes.json();
-      const { jobs } = await jobsRes.json();
+      const groups = await groupsRes.json();
+      const { jobs: activeJobs } = await activeRes.json();
 
       // Update stat cards
       const set = (id, val) => { const el = content.querySelector(id); if (el) el.textContent = val ?? '0'; };
@@ -1115,17 +1117,20 @@ class FullPageDashboard {
       set('#au-stat-completed', stats.completed);
       set('#au-stat-failed', stats.failed);
 
-      // 1. Active & Pending (pending, uploading, verifying)
-      const activeJobs = jobs.filter(j => j.status === 'pending' || j.status === 'uploading' || j.status === 'verifying');
-      this._renderJobList(activeJobs, content.querySelector('#au-active-list'), 'active');
+      // Render Active & Pending Section
+      this._renderGroupedDashboard(content.querySelector('#au-active-list'), groups, activeJobs, 'active');
 
-      // 2. Completed (completed)
-      const completedJobs = jobs.filter(j => j.status === 'completed');
-      this._renderJobList(completedJobs, content.querySelector('#au-completed-list'), 'completed');
+      // For Completed and Failed, we might still need some individual recent jobs
+      // but let's prioritize the Active section first as it's the most critical
+      const [compRes, failRes] = await Promise.all([
+        fetch('/api/scan-jobs?status=completed&limit=50', { credentials: 'include' }),
+        fetch('/api/scan-jobs?status=failed&limit=50', { credentials: 'include' }),
+      ]);
+      const { jobs: compJobs } = await compRes.json();
+      const { jobs: failJobs } = await failRes.json();
 
-      // 3. Failed (failed)
-      const failedJobs = jobs.filter(j => j.status === 'failed');
-      this._renderJobList(failedJobs, content.querySelector('#au-failed-list'), 'failed');
+      this._renderGroupedDashboard(content.querySelector('#au-completed-list'), groups, compJobs, 'completed');
+      this._renderGroupedDashboard(content.querySelector('#au-failed-list'), groups, failJobs, 'failed');
 
     } catch (err) {
       console.error('Auto upload refresh error', err);
@@ -1133,56 +1138,64 @@ class FullPageDashboard {
   }
 
   /**
-   * Robust job list renderer with Video prioritization and Image grouping
-   * @param {Array} jobs - List of jobs to render
-   * @param {HTMLElement} container - Container to render into
-   * @param {string} sectionType - 'active', 'completed', or 'failed'
+   * Main dashboard renderer that uses global directory stats (groups) and individual priority jobs
    */
-  _renderJobList(jobs, container, sectionType) {
+  _renderGroupedDashboard(container, groups, individualJobs, sectionType) {
     if (!container) return;
 
-    if (jobs.length === 0) {
-      container.innerHTML = `<p style="color:var(--text-secondary);">No ${sectionType === 'active' ? 'active' : sectionType} uploads.</p>`;
+    // Filter groups and individuals relevant to this section
+    const relevantGroups = groups.filter(g => {
+      if (sectionType === 'active') return (g.uploadingCount + g.verifyingCount + g.pendingCount) > 0;
+      if (sectionType === 'completed') return g.completedCount > 0;
+      if (sectionType === 'failed') return g.failedCount > 0;
+      return false;
+    });
+
+    const relevantIndividuals = individualJobs.filter(j => {
+      if (sectionType === 'active') return j.status === 'uploading' || j.status === 'verifying' || j.status === 'pending';
+      return j.status === sectionType;
+    });
+
+    if (relevantGroups.length === 0 && relevantIndividuals.length === 0) {
+      container.innerHTML = `<p style="color:var(--text-secondary);">No ${sectionType === 'active' ? 'active/pending' : sectionType} uploads.</p>`;
       return;
     }
 
-    // Separate videos (priority) and images (bulk)
-    const videos = jobs.filter(j => j.mimeType?.startsWith('video/'));
-    const images = jobs.filter(j => j.mimeType?.startsWith('image/') || !j.mimeType?.startsWith('video/'));
-
-    // Group images by directory
-    const imageGroups = new Map();
-    images.forEach(j => {
-      const dir = j.directoryName || 'Other / Root';
-      if (!imageGroups.has(dir)) imageGroups.set(dir, []);
-      imageGroups.get(dir).push(j);
-    });
+    // Separate videos from individuals (Videos are always individual priority)
+    const priorityVideos = relevantIndividuals.filter(j => j.mimeType?.startsWith('video/'));
+    
+    // For images, we only show individual items if they are NOT in a group or if we want them as priority
+    // Actually, let's show ALL relevant individuals that are NOT caught by group headers to be safe
+    // But videos should ALWAYS be shown at the top.
+    const otherIndividuals = relevantIndividuals.filter(j => !j.mimeType?.startsWith('video/'));
 
     let html = '';
 
-    // 1. Render Videos (Individual items)
-    if (videos.length > 0) {
-      html += videos.map(j => this._renderJobItem(j, sectionType)).join('');
+    // 1. Priority Videos
+    if (priorityVideos.length > 0) {
+      html += priorityVideos.map(j => this._renderJobItem(j, sectionType)).join('');
     }
 
-    // 2. Render Image Groups
-    if (imageGroups.size > 0) {
-      html += Array.from(imageGroups.entries()).map(([dirName, dirJobs]) => {
+    // 2. Folder Groups (Accurate Counts from Backend)
+    if (relevantGroups.length > 0) {
+      html += relevantGroups.map(g => {
+        const dirName = g.directoryName || 'Other / Root';
         const isExpanded = this.expandedGroups.has(dirName);
-        const totalFiles = dirJobs.length;
-        const avgProgress = Math.round(dirJobs.reduce((sum, j) => sum + (j.progress || 0), 0) / totalFiles);
         
-        // Calculate group status summary
-        const statusCounts = dirJobs.reduce((acc, j) => {
-          acc[j.status] = (acc[j.status] || 0) + 1;
-          return acc;
-        }, {});
-        const statusSummary = [];
-        if (statusCounts.uploading) statusSummary.push(`${statusCounts.uploading} ⬆`);
-        if (statusCounts.verifying) statusSummary.push(`${statusCounts.verifying} 🔍`);
-        if (statusCounts.pending) statusSummary.push(`${statusCounts.pending} ⏳`);
-        if (statusCounts.completed) statusSummary.push(`${statusCounts.completed} ✓`);
-        if (statusCounts.failed) statusSummary.push(`${statusCounts.failed} ⚠`);
+        const count = sectionType === 'active' 
+          ? (g.uploadingCount + g.verifyingCount + g.pendingCount) 
+          : (sectionType === 'completed' ? g.completedCount : g.failedCount);
+        
+        const progress = g.avgProgress || 0;
+        
+        const summary = [];
+        if (sectionType === 'active') {
+          if (g.uploadingCount) summary.push(`${g.uploadingCount} ⬆`);
+          if (g.verifyingCount) summary.push(`${g.verifyingCount} 🔍`);
+          if (g.pendingCount) summary.push(`${g.pendingCount} ⏳`);
+        } else {
+          summary.push(`${count} ${sectionType === 'completed' ? '✓' : '⚠'}`);
+        }
 
         return `
           <div class="au-group ${isExpanded ? 'expanded' : ''}" data-dir="${dirName}">
@@ -1194,36 +1207,101 @@ class FullPageDashboard {
                 <div style="flex:1;min-width:0;">
                   <div style="font-weight:600;font-size:0.9rem;display:flex;align-items:center;gap:0.5rem;">
                      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${dirName}</span>
-                     <span style="font-size:0.75rem;color:var(--text-tertiary);font-weight:400;">(${totalFiles} files)</span>
+                     <span style="font-size:0.75rem;color:var(--text-tertiary);font-weight:400;">(${count} files)</span>
                   </div>
-                  <div style="font-size:0.7rem;color:var(--text-secondary);">${statusSummary.join(' · ')}</div>
+                  <div style="font-size:0.7rem;color:var(--text-secondary);">${summary.join(' · ')}</div>
                 </div>
               </div>
               
               <div style="display:flex;align-items:center;gap:0.75rem;">
                 <div style="width:80px;height:4px;background:var(--bg-tertiary);border-radius:99px;overflow:hidden;flex-shrink:0;">
-                  <div style="height:100%;width:${avgProgress}%;background:var(--color-primary);border-radius:99px;"></div>
+                  <div style="height:100%;width:${progress}%;background:var(--color-primary);border-radius:99px;"></div>
                 </div>
-                <span style="font-size:0.75rem;width:30px;text-align:right;">${avgProgress}%</span>
-                ${sectionType !== 'active' ? `<button class="btn btn-sm ${sectionType === 'failed' ? 'au-group-retry-btn' : 'au-group-dismiss-btn'}" data-dir="${dirName}" style="padding:0.2rem 0.5rem;font-size:0.7rem;margin-left:0.5rem;">${sectionType === 'failed' ? 'Retry All' : 'Dismiss'}</button>` : ''}
+                <span style="font-size:0.75rem;width:30px;text-align:right;">${Math.round(progress)}%</span>
                 <svg class="au-group-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;transition:transform 0.3s;${isExpanded ? 'transform:rotate(180deg);' : ''}">
                   <polyline points="6 9 12 15 18 9"></polyline>
                 </svg>
               </div>
             </div>
 
-            <div class="au-group-content" style="padding-left:1.5rem;display:${isExpanded ? 'block' : 'none'};">
-              ${dirJobs.slice(0, 50).map(j => this._renderJobItem(j, sectionType, true)).join('')}
-              ${dirJobs.length > 50 ? `<div style="font-size:0.7rem;color:var(--text-tertiary);padding:0.4rem;text-align:center;">... and ${dirJobs.length - 50} more images</div>` : ''}
+            <div class="au-group-content" id="group-content-${dirName.replace(/[^a-z0-9]/gi, '_')}" style="padding-left:1.5rem;display:${isExpanded ? 'block' : 'none'};">
+              ${isExpanded ? `<div class="loading-mini" style="font-size:0.7rem;color:var(--text-tertiary);padding:0.5rem;">Loading details...</div>` : ''}
             </div>
           </div>
         `;
       }).join('');
     }
 
+    // 3. Other Individuals (that don't fit in groups or videos)
+    if (otherIndividuals.length > 0) {
+      // Only show top 10 individual images to prevent clutter if they aren't grouped
+      html += otherIndividuals.slice(0, 10).map(j => this._renderJobItem(j, sectionType)).join('');
+    }
+
     container.innerHTML = html;
 
-    // Attach Event Listeners for Jobs and Groups
+    // Attach Event Listeners
+    this._attachGroupedEventListeners(container, sectionType);
+    
+    // Automatically fetch expanded group details
+    relevantGroups.forEach(g => {
+      const dirName = g.directoryName || 'Other / Root';
+      if (this.expandedGroups.has(dirName)) {
+        this._fetchGroupDetails(dirName, sectionType);
+      }
+    });
+  }
+
+  /**
+   * Fetch individual jobs for an expanded group
+   */
+  async _fetchGroupDetails(dirName, sectionType) {
+    try {
+      const statusFilter = sectionType === 'active' ? 'uploading,verifying,pending' : sectionType;
+      const res = await fetch(`/api/scan-jobs?directoryName=${encodeURIComponent(dirName)}&status=${statusFilter}&limit=100`, { credentials: 'include' });
+      const { jobs } = await res.json();
+      
+      const contentId = `group-content-${dirName.replace(/[^a-z0-9]/gi, '_')}`;
+      const contentEl = document.getElementById(contentId);
+      if (contentEl) {
+        if (jobs.length === 0) {
+          contentEl.innerHTML = `<div style="font-size:0.7rem;color:var(--text-secondary);padding:0.5rem;">No files found in this status.</div>`;
+        } else {
+          contentEl.innerHTML = jobs.map(j => this._renderJobItem(j, sectionType, true)).join('');
+          if (jobs.length === 100) {
+             contentEl.innerHTML += `<div style="font-size:0.7rem;color:var(--text-tertiary);padding:0.4rem;text-align:center;">Showing first 100 items...</div>`;
+          }
+        }
+        // Re-attach listeners for the new buttons
+        this._attachJobEventListeners(contentEl);
+      }
+    } catch (err) {
+      console.error('Failed to fetch group details', err);
+    }
+  }
+
+  _attachGroupedEventListeners(container, sectionType) {
+    container.querySelectorAll('.au-group-header').forEach(header => {
+      header.addEventListener('click', () => {
+        const group = header.parentElement;
+        const dir = group.dataset.dir;
+        const content = group.querySelector('.au-group-content');
+        const chevron = group.querySelector('.au-group-chevron');
+        
+        if (this.expandedGroups.has(dir)) {
+          this.expandedGroups.delete(dir);
+          content.style.display = 'none';
+          chevron.style.transform = 'rotate(0deg)';
+        } else {
+          this.expandedGroups.add(dir);
+          content.style.display = 'block';
+          chevron.style.transform = 'rotate(180deg)';
+          this._fetchGroupDetails(dir, sectionType);
+        }
+      });
+    });
+    
+    // Also attach listeners to any top-level individual jobs
     this._attachJobEventListeners(container);
   }
 

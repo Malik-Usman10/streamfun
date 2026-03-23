@@ -20,11 +20,13 @@ export function createScanJobRoutes(
       const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
       const offset = parseInt(req.query.offset as string) || 0;
       const status = req.query.status as string | undefined;
-
+      const directoryName = req.query.directoryName as string | undefined;
+ 
       const jobs = await scanJobRepo.getAll({
         limit,
         offset,
-        status: status as any,
+        status: status?.includes(',') ? status.split(',') as any : status as any,
+        directoryName
       });
 
       res.json({ jobs, limit, offset });
@@ -36,6 +38,14 @@ export function createScanJobRoutes(
     try {
       const stats = await scanJobRepo.getStats();
       res.json(stats);
+    } catch (err) { next(err); }
+  });
+
+  // GET /api/scan-jobs/groups — summary by directory
+  router.get('/groups', async (_req, res, next) => {
+    try {
+      const groups = await scanJobRepo.getGroupedStats();
+      res.json(groups);
     } catch (err) { next(err); }
   });
 

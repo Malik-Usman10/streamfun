@@ -34,6 +34,18 @@ export interface ScanJobStats {
   total: number;
 }
 
+export interface GroupedStats {
+  directoryName: string | null;
+  totalFiles: number;
+  avgProgress: number;
+  uploadingCount: number;
+  verifyingCount: number;
+  pendingCount: number;
+  completedCount: number;
+  failedCount: number;
+  lastUpdated: Date;
+}
+
 function rowToJob(row: any): ScanJob {
   return {
     id: row.id,
@@ -102,19 +114,79 @@ export class ScanJobRepository {
     return result.rows.map(rowToJob);
   }
 
-  async getAll(options: { limit?: number; offset?: number; status?: ScanJobStatus } = {}): Promise<ScanJob[]> {
-    const { limit = 50, offset = 0, status } = options;
+  async getAll(options: { limit?: number; offset?: number; status?: ScanJobStatus | ScanJobStatus[]; directoryName?: string } = {}): Promise<ScanJob[]> {
+    const { limit = 50, offset = 0, status, directoryName } = options;
     const params: any[] = [limit, offset];
-    let where = '';
+    let where = 'WHERE 1=1';
+    let pCount = 3;
+    
     if (status) {
-      where = 'WHERE status = $3';
-      params.push(status);
+      if (Array.isArray(status)) {
+        where += ` AND status = ANY($${pCount++})`;
+        params.push(status);
+      } else {
+        where += ` AND status = $${pCount++}`;
+        params.push(status);
+      }
     }
+
+    if (directoryName !== undefined) {
+      if (directoryName === null || directoryName === 'Other / Root') {
+        where += ` AND directory_name IS NULL`;
+      } else {
+        where += ` AND directory_name = $${pCount++}`;
+        params.push(directoryName);
+      }
+    }
+
+    // Prioritize active jobs (uploading, verifying) then by most recently updated
     const result = await pool.query(
-      `SELECT * FROM scan_jobs ${where} ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
+      `SELECT * FROM scan_jobs 
+       ${where} 
+       ORDER BY 
+         CASE 
+           WHEN status = 'uploading' THEN 1 
+           WHEN status = 'verifying' THEN 2 
+           ELSE 3 
+         END ASC,
+         updated_at DESC 
+       LIMIT $1 OFFSET $2`,
       params
     );
     return result.rows.map(rowToJob);
+  }
+
+  /**
+   * Get globally accurate stats grouped by directory
+   */
+  async getGroupedStats(): Promise<GroupedStats[]> {
+    const result = await pool.query(
+      `SELECT 
+        directory_name, 
+        COUNT(*)::int as total_files,
+        AVG(progress)::float as avg_progress,
+        SUM(CASE WHEN status = 'uploading' THEN 1 ELSE 0 END)::int as uploading_count,
+        SUM(CASE WHEN status = 'verifying' THEN 1 ELSE 0 END)::int as verifying_count,
+        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END)::int as pending_count,
+        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END)::int as completed_count,
+        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END)::int as failed_count,
+        MAX(updated_at) as last_updated
+      FROM scan_jobs
+      GROUP BY directory_name
+      ORDER BY last_updated DESC`
+    );
+
+    return result.rows.map(row => ({
+      directoryName: row.directory_name,
+      totalFiles: row.total_files,
+      avgProgress: row.avg_progress,
+      uploadingCount: row.uploading_count,
+      verifyingCount: row.verifying_count,
+      pendingCount: row.pending_count,
+      completedCount: row.completed_count,
+      failedCount: row.failed_count,
+      lastUpdated: new Date(row.last_updated)
+    }));
   }
 
   async getStats(): Promise<ScanJobStats> {
