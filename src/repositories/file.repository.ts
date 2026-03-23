@@ -80,9 +80,18 @@ export class FileRepository {
         data.uploadedAt,
       ];
 
-    const result = await pool.query<FileRecord>(query, params);
-
-    return this.mapRow(result.rows[0]);
+    try {
+      const result = await pool.query<FileRecord>(query, params);
+      return this.mapRow(result.rows[0]);
+    } catch (err: any) {
+      // 23505 is PostgreSQL error for unique_violation
+      if (err.code === '23505') {
+        logger.info({ filename: data.filename, collectionName: data.collectionName }, 'File already exists (unique violation), returning existing record');
+        const existing = await this.existsByNameAndSize(data.filename, data.size, data.collectionName);
+        if (existing) return existing;
+      }
+      throw err;
+    }
   }
 
   async findById(id: string): Promise<FileRecord | null> {
@@ -246,22 +255,24 @@ export class FileRepository {
     await pool.query('DELETE FROM files WHERE id = $1', [id]);
   }
 
-  async existsByNameAndSize(filename: string, size: number): Promise<boolean> {
-    const result = await pool.query(
-      "SELECT id, metadata FROM files WHERE filename = $1 AND size = $2 LIMIT 1",
-      [filename, size]
+  async existsByNameAndSize(filename: string, size: number, collectionName?: string): Promise<FileRecord | null> {
+    const result = await pool.query<FileRecord>(
+      "SELECT * FROM files WHERE filename = $1 AND size = $2 AND COALESCE(collection_name, '') = $3 LIMIT 1",
+      [filename, size, collectionName || '']
     );
     
-    if (result.rows.length === 0) return false;
+    if (result.rows.length === 0) return null;
+    
+    const file = this.mapRow(result.rows[0]);
     
     // If the file is specifically marked as corrupted, we treat it as if it doesn't exist
     // so the auto-uploader can try again.
-    const metadata = result.rows[0].metadata;
+    const metadata = file.metadata as any;
     if (metadata && metadata.corrupted === true) {
-      return false;
+      return null;
     }
     
-    return true;
+    return file;
   }
 
   private mapRow(row: any): FileRecord {

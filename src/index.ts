@@ -69,8 +69,7 @@ async function start() {
       if (ctx) {
         try {
           // Only start the BullMQ upload worker if auto-scan is enabled.
-          // This prevents dev/test instances (with ENABLE_AUTO_SCAN=false) from
-          // connecting to the shared Redis and stealing upload jobs they can't process.
+          logger.info({ autoScan: appConfig.upload.autoScan }, 'Auto-upload system configuration status');
           if (appConfig.upload.autoScan) {
             // CRITICAL: Drain all stale Redis jobs FIRST, then re-enqueue from DB
             // with correct priority routing, then start workers.

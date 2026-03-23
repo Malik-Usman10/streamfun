@@ -594,64 +594,52 @@ class MediaPlayer {
    * @param {Object} file - File object
    */
   createImageViewer(file) {
-    const img = document.createElement('img');
-    img.className = 'media-image';
-    img.alt = escapeHtml(file.filename);
+    const container = document.createElement('div');
+    container.className = 'image-viewer-container';
 
-    // ALWAYS load full resolution image for viewing
-    img.src = `/api/files/${file.id}/play`;
+    // 1. Background Thumbnail Layer (Immediate)
+    const thumbnailImg = document.createElement('img');
+    thumbnailImg.className = 'media-image thumbnail-placeholder';
+    thumbnailImg.alt = `${escapeHtml(file.filename)} (loading)`;
+    thumbnailImg.src = file.thumbnail || '';
 
-    // Show loading message while full image loads
-    const loadingMsg = document.createElement('div');
-    loadingMsg.className = 'image-loading-message';
-    loadingMsg.innerHTML = `
-      <div class="spinner"></div>
-      <p>Loading full resolution image...</p>
-    `;
-    loadingMsg.style.cssText = `
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      text-align: center;
-      color: white;
-      z-index: 20;
-    `;
-    this.elements.contentContainer.appendChild(loadingMsg);
+    // 2. Full Resolution Layer (Loading in background)
+    const fullImg = document.createElement('img');
+    fullImg.className = 'media-image full-res-image';
+    fullImg.alt = escapeHtml(file.filename);
 
-    img.addEventListener('load', () => {
-      loadingMsg.remove();
+    // Start loading full resolution image
+    fullImg.src = `/api/files/${file.id}/play`;
+
+    // Handle full image load
+    fullImg.addEventListener('load', () => {
+      fullImg.style.opacity = '1';
+      thumbnailImg.style.opacity = '0';
+      
+      // Delay removal to allow transition to complete
+      setTimeout(() => {
+        thumbnailImg.remove();
+      }, 500);
     });
 
-    img.addEventListener('error', () => {
-      loadingMsg.remove();
+    // Handle image errors
+    fullImg.addEventListener('error', () => {
+      console.error('Image load error');
+      thumbnailImg.style.filter = 'grayscale(1) blur(5px)';
+      this.showError('Failed to load full resolution image. Please try again.');
     });
 
-    // Add zoom functionality
+    // Add zoom functionality to the full image
     let isZoomed = false;
-
-    img.addEventListener('dblclick', (e) => {
+    fullImg.addEventListener('dblclick', (e) => {
       e.preventDefault();
       isZoomed = !isZoomed;
-      img.classList.toggle('zoomed', isZoomed);
+      fullImg.classList.toggle('zoomed', isZoomed);
     });
 
-    // Add error handling
-    img.addEventListener('error', () => {
-      console.error('Image load error');
-      this.showError('Failed to load image. Please try again.');
-    });
-
-    // Add loading indicator with blur effect
-    img.style.opacity = '0';
-    img.style.filter = 'blur(10px)';
-    img.addEventListener('load', () => {
-      img.style.transition = 'opacity 0.3s, filter 0.3s';
-      img.style.opacity = '1';
-      img.style.filter = 'blur(0px)';
-    });
-
-    this.elements.contentContainer.appendChild(img);
+    container.appendChild(thumbnailImg);
+    container.appendChild(fullImg);
+    this.elements.contentContainer.appendChild(container);
 
     // Add bottom info bar for images
     const counterText = this.fileList.length > 1

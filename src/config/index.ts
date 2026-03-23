@@ -72,8 +72,9 @@ function getEnvNumber(key: string, defaultValue: number): number {
 }
 
 function getEnvBoolean(key: string, defaultValue: boolean): boolean {
-  const value = process.env[key];
-  return value ? value === 'true' : defaultValue;
+  const value = process.env[key]?.trim().toLowerCase();
+  if (value === undefined || value === '') return defaultValue;
+  return value === 'true' || value === '1' || value === 'yes';
 }
 
 export const appConfig: Config = {

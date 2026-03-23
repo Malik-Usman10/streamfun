@@ -345,10 +345,16 @@ export class AutoUploadQueue {
 
 
     // Check if file already exists in library (final check before starting)
-    const exists = await this.fileRepo.existsByNameAndSize(filename, fileSize);
-    if (exists && fullJob.status !== 'uploading' && fullJob.status !== 'pending') {
-      logger.info({ filename, fileSize }, 'File already exists in library, skipping auto-upload');
-      await this.scanJobRepo.updateStatus(scanJobId, 'skipped');
+    const existingFile = await this.fileRepo.existsByNameAndSize(filename, fileSize, fullJob.directoryName ?? undefined);
+    if (existingFile && fullJob.status !== 'uploading' && fullJob.status !== 'pending') {
+      logger.info({ filename, fileSize, collection: fullJob.directoryName }, 'File already exists in library, skipping auto-upload');
+      
+      // If the scan job doesn't have a fileId yet, point it to the existing one for tracking
+      if (!fullJob.fileId) {
+        await this.scanJobRepo.updateFileId(scanJobId, existingFile.id);
+      }
+      
+      await this.scanJobRepo.updateStatus(scanJobId, 'completed'); // Mark as completed instead of skipped to show in UI
       return;
     }
 
