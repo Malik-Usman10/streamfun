@@ -80,6 +80,13 @@ export function generateStoragePath(options: {
     // Images
     const collection = collectionName || generateDefaultCollectionName();
     const sanitizedCollection = sanitizeFolderName(collection);
+    
+    // If it's part of a chunked upload, we must use a subdirectory to prevent overwrites
+    if (chunkIndex !== undefined) {
+      const sanitizedFile = sanitizeFolderName(filename);
+      return `${basePath}images/${sanitizedCollection}/${sanitizedFile}/chunk_${chunkIndex}`;
+    }
+    
     return `${basePath}images/${sanitizedCollection}/${filename}`;
   }
 }

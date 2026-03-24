@@ -51,10 +51,10 @@ export class RcloneStorageProvider implements IStorageProvider {
 
       // Test if remote exists and is accessible
       // For Blomp, we need to include the bucket name in the path
-      const testPath = remotePath 
+      const testPath = remotePath
         ? `${remoteName}:${remotePath}`
         : `${remoteName}:`;
-      
+
       const { stdout } = await execAsync(`rclone lsd ${testPath}`, {
         timeout: 10000,
       });
@@ -129,10 +129,10 @@ export class RcloneStorageProvider implements IStorageProvider {
         : `${remoteName}:${file.filename}`;
 
       // Extract directory path
-      const remoteDir = remoteFilePath.includes('/') 
+      const remoteDir = remoteFilePath.includes('/')
         ? remoteFilePath.substring(0, remoteFilePath.lastIndexOf('/'))
         : remoteFilePath.substring(0, remoteFilePath.lastIndexOf(':') + 1);
-      
+
       logger.debug({ tempFilePath, remoteFilePath, remoteDir }, 'Uploading via rclone copyto');
 
       // Upload file directly to the final path
@@ -160,7 +160,7 @@ export class RcloneStorageProvider implements IStorageProvider {
       // Clean up temp file
       try {
         await unlink(tempFilePath);
-      } catch {}
+      } catch { }
     }
   }
 
@@ -201,7 +201,7 @@ export class RcloneStorageProvider implements IStorageProvider {
         lastError = err;
         logger.warn({ attempt, maxAttempts, fileId, error: err.message }, 'Rclone copyto download attempt failed');
         // Clean up failed temp file
-        try { await unlink(tempFilePath); } catch {}
+        try { await unlink(tempFilePath); } catch { }
         if (attempt < maxAttempts) {
           await new Promise(r => setTimeout(r, attempt * 2000)); // 2s, 4s backoff
         }
@@ -231,21 +231,21 @@ export class RcloneStorageProvider implements IStorageProvider {
         readStream.on('end', () => {
           if (streamClosed) return;
           streamClosed = true;
-          try { controller.close(); } catch {}
+          try { controller.close(); } catch { }
           // Async cleanup — fire and forget
-          unlink(tempFilePath).catch(() => {});
+          unlink(tempFilePath).catch(() => { });
         });
         readStream.on('error', (err) => {
           if (streamClosed) return;
           streamClosed = true;
-          try { controller.error(err); } catch {}
-          unlink(tempFilePath).catch(() => {});
+          try { controller.error(err); } catch { }
+          unlink(tempFilePath).catch(() => { });
         });
       },
       cancel() {
         streamClosed = true;
         readStream.destroy();
-        unlink(tempFilePath).catch(() => {});
+        unlink(tempFilePath).catch(() => { });
       }
     });
   }
@@ -390,7 +390,7 @@ export class RcloneStorageProvider implements IStorageProvider {
     } catch (error: any) {
       // Fallback: return a local serve URL that our app handles
       logger.info({ fileId, provider: account.providerType }, 'Using internal streaming fallback');
-      
+
       // In a real environment, this should be the public URL of the app
       const baseUrl = process.env.API_BASE_URL || 'http://localhost:3000';
       return {
@@ -408,15 +408,15 @@ export class RcloneStorageProvider implements IStorageProvider {
       // Use the remote name and path for the about command
       // Swift/Blomp requires a container/bucket name (which we store in remotePath)
       const target = remotePath ? `${remoteName}:${remotePath}` : `${remoteName}:`;
-      
+
       logger.debug({ remoteName, target }, 'Fetching quota info for remote');
-      
+
       const { stdout, stderr } = await execAsync(`rclone about "${target}" --json`, {
         timeout: 20000, // Increased timeout to 20s for slow providers like GDrive
       });
 
       if (stderr && stderr.includes('NOTICE')) {
-         logger.debug({ stderr }, 'Rclone about notice');
+        logger.debug({ stderr }, 'Rclone about notice');
       }
 
       const aboutInfo = JSON.parse(stdout);
@@ -461,7 +461,7 @@ export class RcloneStorageProvider implements IStorageProvider {
     if (!account.tokensEncrypted) {
       throw new Error('Account session data not found');
     }
-    
+
     try {
       // Decrypt session data to get remote name
       const decrypted = await this.encryptionService.decrypt(account.tokensEncrypted);
@@ -477,11 +477,11 @@ export class RcloneStorageProvider implements IStorageProvider {
     if (!account.tokensEncrypted) {
       return '';
     }
-    
+
     try {
       const decrypted = await this.encryptionService.decrypt(account.tokensEncrypted);
       const sessionData = JSON.parse(decrypted);
-      
+
       if (sessionData.remotePath) {
         return sessionData.remotePath;
       }
