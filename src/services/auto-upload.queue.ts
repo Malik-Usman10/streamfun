@@ -485,6 +485,9 @@ export class AutoUploadQueue {
           if (this.accountService) {
             this.accountService.refreshAccountQuota(selectedAccountId).catch(() => {});
           }
+          
+          // Increment usage in database immediately for better UX
+          this.accountSelector.updateQuotaAfterUpload(selectedAccountId, fileSize).catch(() => {});
 
           // INTEGRITY CHECK (Offload to dedicated integrity queue)
           if (this.integrityService) {

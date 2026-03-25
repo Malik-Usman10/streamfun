@@ -745,6 +745,11 @@ export class ChunkManager {
     // Clean up temporary metadata
     this.uploadMetadata.delete(fileId);
 
+    // Update account quota after successful finalization (increments usage immediately in DB)
+    if (metadata?.accountId) {
+      this.accountSelector.updateQuotaAfterUpload(metadata.accountId, metadata.size).catch(() => { });
+    }
+
     logger.info({ fileId }, 'Chunked upload finalized');
 
     return fileRecord;

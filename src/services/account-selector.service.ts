@@ -26,7 +26,7 @@ export interface AccountSelection {
 }
 
 export class AccountSelector {
-  private quotaRefreshInterval = 5 * 60 * 1000; // 5 minutes
+  private quotaRefreshInterval = 60 * 60 * 1000; // 1 hour (reduced from 5 mins for base, but threshold below is what matters)
   private refreshInProgress = new Map<string, Promise<QuotaInfo>>(); // Prevent concurrent refreshes
   
   constructor(
@@ -154,8 +154,8 @@ export class AccountSelector {
       const lastRefreshed = row.quota_last_checked_at ? new Date(row.quota_last_checked_at) : null;
       const now = new Date();
       
-      // Use cache if less than 24 hours old (aligned with dashboard cache)
-      if (lastRefreshed && (now.getTime() - lastRefreshed.getTime() < 24 * 60 * 60 * 1000)) {
+      // Use cache if less than 1 hour old (reduced from 24h for better responsiveness)
+      if (lastRefreshed && (now.getTime() - lastRefreshed.getTime() < 60 * 60 * 1000)) {
         return {
           accountId: row.id,
           totalSpace: parseInt(row.quota_total || '0'),

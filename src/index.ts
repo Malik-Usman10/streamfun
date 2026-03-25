@@ -89,11 +89,8 @@ async function start() {
             logger.info('Auto-scan disabled, skipping upload worker and directory watcher');
           }
 
-          // Performance: Initial quota sync for all accounts ONE TIME on startup
-          logger.info('Syncing initial quotas for all accounts...');
-          ctx.accountService.syncAllQuotas().catch(err => {
-            logger.error({ err }, 'Initial quota sync failed (non-fatal)');
-          });
+          // Performance: Start account quota background sync (every 60 mins)
+          ctx.accountService.startBackgroundSync(60);
 
           // Initialize backup system
           ctx.backupQueue.startWorker();

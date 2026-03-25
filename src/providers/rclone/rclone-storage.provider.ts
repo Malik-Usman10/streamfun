@@ -421,10 +421,15 @@ export class RcloneStorageProvider implements IStorageProvider {
 
       const aboutInfo = JSON.parse(stdout);
 
+      // If total is missing, rclone about didn't provide useful quota info
+      if (typeof aboutInfo.total !== 'number') {
+        throw new Error('Provider did not return total quota information');
+      }
+
       return {
-        total: aboutInfo.total || 0,
-        used: aboutInfo.used || 0,
-        available: aboutInfo.free || 0,
+        total: aboutInfo.total,
+        used: typeof aboutInfo.used === 'number' ? aboutInfo.used : 0,
+        available: typeof aboutInfo.free === 'number' ? aboutInfo.free : 0,
         unit: 'bytes',
       };
     } catch (error: any) {

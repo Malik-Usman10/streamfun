@@ -145,7 +145,7 @@ export class AccountService {
   async syncAllQuotas(): Promise<void> {
     const accounts = await this.listAccounts();
     const now = new Date();
-    const STALE_THRESHOLD = 24 * 60 * 60 * 1000; // 24 hours
+    const STALE_THRESHOLD = 60 * 60 * 1000; // 1 hour (reduced from 24h)
     
     const activeAccounts = accounts.filter(a => {
       if (a.status !== 'active') return false;
@@ -204,5 +204,39 @@ export class AccountService {
       logger.error({ error: error.message, accountId }, 'Failed to refresh account quota');
       throw error;
     }
+  }
+
+  /**
+   * Refresh quota for an account by its remote name (identifier)
+   */
+  async refreshAccountQuotaByRemoteName(remoteName: string): Promise<void> {
+    const accounts = await this.listAccounts();
+    const account = accounts.find(a => a.accountIdentifier === remoteName);
+    
+    if (account) {
+      return this.refreshAccountQuota(account.id);
+    } else {
+      logger.warn({ remoteName }, 'No account found for remote name, skipping quota refresh');
+    }
+  }
+
+  /**
+   * Start periodic background synchronization of all account quotas
+   */
+  startBackgroundSync(intervalMinutes: number = 60): void {
+    logger.info({ intervalMinutes }, 'Starting account quota background sync');
+    
+    // Initial sync
+    this.syncAllQuotas().catch(err => {
+      logger.error({ err }, 'Periodic quota sync failed (initial)');
+    });
+
+    // Schedule periodic sync
+    setInterval(() => {
+      logger.info('Running scheduled account quota sync');
+      this.syncAllQuotas().catch(err => {
+        logger.error({ err }, 'Periodic quota sync failed');
+      });
+    }, intervalMinutes * 60 * 1000);
   }
 }

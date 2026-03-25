@@ -488,6 +488,11 @@ router.post('/remotes/:remoteName/test', async (req: Request, res: Response) => 
 
     const result = await rcloneIntegrationService.testConnection(remoteName, 10000, remotePath);
 
+    // If test is successful, also trigger a quota refresh in the background
+    if (result.success) {
+      accountService.refreshAccountQuotaByRemoteName(remoteName).catch(() => {});
+    }
+
     res.json({
       success: true,
       data: result
