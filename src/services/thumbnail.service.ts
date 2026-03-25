@@ -18,9 +18,9 @@ export interface ThumbnailOptions {
 }
 
 export class ThumbnailService {
-  private readonly defaultWidth = 320;
-  private readonly defaultHeight = 180;
-  private readonly defaultQuality = 80;
+  private readonly defaultWidth = 480;
+  private readonly defaultHeight = 270;
+  private readonly defaultQuality = 85;
 
   /**
    * Generate thumbnail from video file
@@ -60,6 +60,53 @@ export class ThumbnailService {
       
       throw new Error(`Thumbnail generation failed: ${error.message}`);
     }
+  }
+
+  /**
+   * Get duration of a video file in seconds
+   */
+  async getVideoDuration(videoPath: string): Promise<number> {
+    try {
+      const { stdout } = await execAsync(
+        `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoPath}"`
+      );
+      return parseFloat(stdout.trim());
+    } catch (error: any) {
+      logger.error({ error: error.message, videoPath }, 'Failed to get video duration');
+      return 0;
+    }
+  }
+
+  /**
+   * Generate multiple thumbnail candidates from a video at different timestamps
+   */
+  async generateMultipleVideoThumbnails(
+    videoPath: string,
+    duration: number,
+    count: number = 6,
+    options: ThumbnailOptions = {}
+  ): Promise<string[]> {
+    const thumbnails: string[] = [];
+    
+    // Percentages to capture: e.g. 10%, 25%, 40%, 55%, 70%, 85%
+    const step = 0.75 / count;
+    const start = 0.1;
+    
+    for (let i = 0; i < count; i++) {
+      const percentage = start + (i * step);
+      const timestamp = Math.floor(duration * percentage);
+      try {
+        const dataUrl = await this.generateVideoThumbnail(videoPath, {
+          ...options,
+          timestamp: Math.max(1, timestamp)
+        });
+        thumbnails.push(dataUrl);
+      } catch (err) {
+        logger.warn({ videoPath, timestamp, i }, 'Failed to generate one of the multiple thumbnails');
+      }
+    }
+    
+    return thumbnails;
   }
 
   /**

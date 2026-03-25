@@ -184,6 +184,28 @@ const api = {
   },
 
   /**
+   * Fetch thumbnail candidates for picker
+   * @param {string} fileId - File ID
+   * @returns {Promise<Object>} Candidates array
+   */
+  async fetchThumbnailCandidates(fileId) {
+    return await apiCall(`${API_BASE}/files/${fileId}/thumbnails/candidates`);
+  },
+
+  /**
+   * Apply selected thumbnail
+   * @param {string} fileId - File ID
+   * @param {string} thumbnailData - Data URL
+   * @returns {Promise<Object>} Result
+   */
+  async applyThumbnail(fileId, thumbnailData) {
+    return await apiCall(`${API_BASE}/files/${fileId}/thumbnail/apply`, {
+      method: 'POST',
+      body: JSON.stringify({ thumbnail: thumbnailData })
+    });
+  },
+
+  /**
    * Upload file using chunked upload
    * @param {File} file - File to upload
    * @param {Object} options - Upload options

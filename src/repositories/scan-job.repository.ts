@@ -43,6 +43,7 @@ export interface GroupedStats {
   pendingCount: number;
   completedCount: number;
   failedCount: number;
+  category: 'videos' | 'images';
   lastUpdated: Date;
 }
 
@@ -170,6 +171,7 @@ export class ScanJobRepository {
         SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END)::int as pending_count,
         SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END)::int as completed_count,
         SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END)::int as failed_count,
+        MAX(CASE WHEN mime_type LIKE 'image/%' THEN 'images' ELSE 'videos' END) as category,
         MAX(updated_at) as last_updated
       FROM scan_jobs
       GROUP BY directory_name
@@ -185,6 +187,7 @@ export class ScanJobRepository {
       pendingCount: row.pending_count,
       completedCount: row.completed_count,
       failedCount: row.failed_count,
+      category: row.category as 'videos' | 'images',
       lastUpdated: new Date(row.last_updated)
     }));
   }
@@ -328,5 +331,22 @@ export class ScanJobRepository {
        WHERE id = $2`,
       [reason, id]
     );
+  }
+
+  /**
+   * Bulk delete scan jobs by directory and status
+   */
+  async deleteByDirectory(directoryName: string | null, status: ScanJobStatus): Promise<void> {
+    if (directoryName === null || directoryName === 'Other / Root') {
+      await pool.query(
+        'DELETE FROM scan_jobs WHERE directory_name IS NULL AND status = $1',
+        [status]
+      );
+    } else {
+      await pool.query(
+        'DELETE FROM scan_jobs WHERE directory_name = $1 AND status = $2',
+        [directoryName, status]
+      );
+    }
   }
 }

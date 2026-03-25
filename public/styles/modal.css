@@ -828,3 +828,104 @@
     padding-bottom: var(--spacing-md);
   }
 }
+/* Thumbnail Picker */
+.thumbnail-picker-content {
+  max-width: 800px;
+  width: 90%;
+}
+
+.thumbnail-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--spacing-md);
+  margin-top: var(--spacing-lg);
+}
+
+.thumbnail-option {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  cursor: pointer;
+  border: 3px solid transparent;
+  transition: all var(--transition-fast);
+  background-color: var(--bg-tertiary);
+}
+
+.thumbnail-option:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+
+.thumbnail-option.selected {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2);
+}
+
+.thumbnail-option img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.thumbnail-option .selection-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background-color: var(--color-primary);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transform: scale(0.5);
+  transition: all var(--transition-fast);
+}
+
+.thumbnail-option.selected .selection-badge {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.thumbnail-loading-overlay {
+  position: absolute;
+  inset: 0;
+  background-color: rgba(var(--bg-primary-rgb), 0.8);
+  backdrop-filter: blur(4px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  border-radius: var(--radius-lg);
+}
+
+.thumbnail-loading-canvas {
+  width: 100%;
+  min-height: 300px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-color);
+  margin: var(--spacing-lg) 0;
+}
+
+.thumbnail-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid rgba(var(--color-primary-rgb), 0.1);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-bottom: var(--spacing-md);
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}

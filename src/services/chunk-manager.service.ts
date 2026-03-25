@@ -696,12 +696,15 @@ export class ChunkManager {
     // Track uploaded chunk
     metadata.uploadedChunks.push(chunkIndex);
 
-    // Generate thumbnail from first chunk (for videos/images)
-    if (chunkIndex === 0 && (metadata.mimeType?.startsWith('video/') || metadata.mimeType?.startsWith('image/'))) {
+    // Generate thumbnail from first chunk (only if it represents the full image or is a video)
+    const isSingleChunkImage = metadata.mimeType?.startsWith('image/') && metadata.totalChunks === 1;
+    const isVideo = metadata.mimeType?.startsWith('video/');
+
+    if (chunkIndex === 0 && (isSingleChunkImage || isVideo)) {
       try {
         const thumbnail = await this.thumbnailService.generateThumbnailFromBuffer(
           Buffer.from(chunkData),
-          metadata.mimeType
+          metadata.mimeType!
         );
 
         // Update file record with thumbnail

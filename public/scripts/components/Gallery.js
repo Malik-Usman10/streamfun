@@ -443,17 +443,14 @@ class Gallery {
    */
   async handleRefreshThumbnailClick(file, article) {
     try {
-      showInfo('Regenerating thumbnail...');
-
-      // Import API dynamically
-      const { default: api } = await import('../api.js');
-      const result = await api.regenerateThumbnail(file.id);
-
-      if (result.success && result.thumbnail) {
+      // Import ThumbnailPicker dynamically
+      const { default: picker } = await import('./ThumbnailPicker.js');
+      
+      picker.open(file, (newThumbnail) => {
         const img = article.querySelector('.thumbnail');
         if (img) {
-          img.src = result.thumbnail;
-          img.dataset.src = result.thumbnail;
+          img.src = newThumbnail;
+          img.dataset.src = newThumbnail;
           img.classList.add('loaded');
           img.classList.remove('loading');
         } else {
@@ -464,13 +461,12 @@ class Gallery {
             const newImg = createElement('img', {
               className: 'thumbnail loaded',
               alt: `${escapeHtml(file.filename)} thumbnail`,
-              src: result.thumbnail
+              src: newThumbnail
             });
             placeholder.replaceWith(newImg);
           }
         }
-        showSuccess('Thumbnail updated');
-      }
+      });
     } catch (error) {
       console.error('Refresh thumbnail error:', error);
       showError(error.message);

@@ -468,6 +468,39 @@ export function createFileRoutes(fileService: FileService, streamService: Stream
     }
   });
 
+  // Get multiple thumbnail candidates (for picker)
+  router.get('/:id/thumbnails/candidates', async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      const count = parseInt(req.query.count as string) || 6;
+      const candidates = await fileService.generateThumbnailCandidates(id, count);
+      
+      res.json({
+        success: true,
+        candidates
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Apply a selected thumbnail
+  router.post('/:id/thumbnail/apply', async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      const { thumbnail } = req.body;
+
+      if (!thumbnail) {
+        return res.status(400).json({ error: 'Thumbnail data required' });
+      }
+
+      await fileService.updateFileThumbnail(id, thumbnail);
+      res.json({ success: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   // Generate streaming link
   router.get('/:id/stream', async (req, res, next) => {
     try {

@@ -414,102 +414,59 @@ export class FileService {
   }
 
   async regenerateThumbnail(fileId: string): Promise<string> {
+    const candidates = await this.generateThumbnailCandidates(fileId, 1);
+    const thumbnailData = candidates[0];
+    await this.fileRepository.update(fileId, { thumbnailData });
+    return thumbnailData;
+  }
+
+  /**
+   * Generate multiple thumbnail candidates (for videos) or a high-res one (for images)
+   */
+  async generateThumbnailCandidates(fileId: string, count: number = 6): Promise<string[]> {
     const file = await this.fileRepository.findById(fileId);
-    if (!file) {
-      throw new FileNotFoundError(fileId);
-    }
+    if (!file) throw new FileNotFoundError(fileId);
 
-    logger.info({ fileId, filename: file.filename }, 'Regenerating thumbnail');
+    logger.info({ fileId, filename: file.filename }, `Generating ${count} thumbnail candidates`);
 
-    const { appConfig } = await import('../config/index.js');
-    let thumbnailData: string | undefined;
-
-    try {
-      // 1. Try URL-based generation (Most robust for ffmpeg seeking)
-      let videoUrl: string | undefined;
-
-      if (!file.isChunked) {
-        try {
-          const account = await this.accountRotator.selectAccountForDownload(file.providerType, file.size);
-          const provider = this.providerFactory.getProvider(file.providerType);
-          await this.tokenManager.refreshIfNeeded(account, provider);
-          const link = await provider.generateStreamingLink(account, file.providerFileId);
-          
-          // Check if link is a real URL (not the bridge fallback)
-          if (link.url.startsWith('http') && !link.url.includes('/api/files/')) {
-            videoUrl = link.url;
-            logger.debug({ fileId }, 'Using direct provider link for thumbnail');
-          }
-        } catch (e) {
-          logger.warn({ fileId, error: (e as Error).message }, 'Failed to get direct provider link for thumbnail');
-        }
-      }
-
-      // 2. If no direct link or is chunked, use internal proxy with secret
-      if (!videoUrl && file.mimeType?.startsWith('video/')) {
-        videoUrl = `${appConfig.server.apiBaseUrl}/api/files/${fileId}/play?internalToken=${appConfig.server.internalSecret}`;
-        logger.debug({ fileId }, 'Using internal proxy URL for thumbnail');
-      }
-
-      if (videoUrl && file.mimeType?.startsWith('video/')) {
-        try {
-          thumbnailData = await this.thumbnailService.generateVideoThumbnail(videoUrl, {
-            timestamp: 0 // Start at 0 for best chance of catching metadata
-          });
-        } catch (e) {
-          logger.warn({ fileId, error: (e as Error).message }, 'URL-based thumbnail generation failed, falling back to buffer');
-        }
-      }
-
-      // 3. Fallback to buffer-based (for images or if URL failed)
-      if (!thumbnailData) {
-        logger.info({ fileId }, 'Using buffer-based fallback for thumbnail');
-        const rangeSize = 15 * 1024 * 1024; // 15MB for fallback
-        let buffer: Buffer;
-
-        if (file.isChunked && this.chunkManager) {
-          const stream = await this.chunkManager.downloadFileInChunks(fileId, 0, rangeSize);
-          const reader = stream.getReader();
-          const chunks: Uint8Array[] = [];
-          while (true) {
+    // For images, we just want one full-res high quality thumbnail
+    if (file.mimeType?.startsWith('image/')) {
+        const { stream } = await this.downloadFile(fileId);
+        const reader = stream.getReader();
+        const chunks: Uint8Array[] = [];
+        while (true) {
             const { done, value } = await reader.read();
             if (done) break;
             chunks.push(value);
-          }
-          buffer = Buffer.concat(chunks);
+        }
+        const buffer = Buffer.concat(chunks);
+        const thumbnail = await this.thumbnailService.generateThumbnailFromBuffer(buffer, file.mimeType);
+        return [thumbnail];
+    }
+
+    // For videos, try to get duration and generate distributed frames
+    if (file.mimeType?.startsWith('video/')) {
+        const { appConfig } = await import('../config/index.js');
+        let videoUrl = `${appConfig.server.apiBaseUrl}/api/files/${fileId}/play?internalToken=${appConfig.server.internalSecret}`;
+        
+        // Try to get duration using ffprobe
+        const duration = await this.thumbnailService.getVideoDuration(videoUrl);
+        
+        if (duration > 0) {
+            return await this.thumbnailService.generateMultipleVideoThumbnails(videoUrl, duration, count);
         } else {
-          const { stream } = await this.downloadFile(fileId, 0, rangeSize);
-          const reader = stream.getReader();
-          const chunks: Uint8Array[] = [];
-          
-          let totalSize = 0;
-          while (totalSize < rangeSize) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            chunks.push(value);
-            totalSize += value.length;
-          }
-          buffer = Buffer.concat(chunks);
+            // Fallback: capture just the first frame if duration unknown
+            const thumb = await this.thumbnailService.generateVideoThumbnail(videoUrl, { timestamp: 1 });
+            return [thumb];
         }
-
-        thumbnailData = await this.thumbnailService.generateThumbnailFromBuffer(
-          buffer,
-          file.mimeType || 'video/mp4'
-        );
-      }
-
-      if (!thumbnailData) {
-        throw new Error('All thumbnail generation methods failed');
-      }
-
-      await this.fileRepository.update(fileId, { thumbnailData });
-      logger.info({ fileId }, 'Thumbnail regenerated successfully');
-      
-      return thumbnailData;
-    } catch (error: any) {
-      logger.error({ fileId, error: error.message }, 'Failed to regenerate thumbnail');
-      throw error;
     }
+
+    throw new Error('Unsupported file type for thumbnails');
+  }
+
+  async updateFileThumbnail(fileId: string, thumbnailData: string): Promise<void> {
+    await this.fileRepository.update(fileId, { thumbnailData });
+    logger.info({ fileId }, 'File thumbnail updated via picker');
   }
 
   private delay(ms: number): Promise<void> {

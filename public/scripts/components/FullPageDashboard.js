@@ -1201,9 +1201,18 @@ class FullPageDashboard {
           <div class="au-group ${isExpanded ? 'expanded' : ''}" data-dir="${dirName}">
             <div class="au-group-header" style="display:flex;align-items:center;justify-content:space-between;padding:0.6rem 0.75rem;background:rgba(255,255,255,0.03);border-radius:8px;cursor:pointer;margin-bottom:0.4rem;transition:background 0.2s;">
               <div style="display:flex;align-items:center;gap:0.75rem;flex:1;min-width:0;">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;flex-shrink:0;color:var(--color-primary);">
-                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
-                </svg>
+                ${g.category === 'images' ? `
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;flex-shrink:0;color:var(--color-primary);">
+                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                    <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                    <polyline points="21 15 16 10 5 21"></polyline>
+                  </svg>
+                ` : `
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;flex-shrink:0;color:var(--color-primary);">
+                    <polygon points="23 7 16 12 23 17 23 7"></polygon>
+                    <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
+                  </svg>
+                `}
                 <div style="flex:1;min-width:0;">
                   <div style="font-weight:600;font-size:0.9rem;display:flex;align-items:center;gap:0.5rem;">
                      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${dirName}</span>
@@ -1214,6 +1223,9 @@ class FullPageDashboard {
               </div>
               
               <div style="display:flex;align-items:center;gap:0.75rem;">
+                ${sectionType !== 'active' ? `
+                  <button class="au-bulk-dismiss-btn" data-dir="${dirName}" data-status="${sectionType}" style="font-size:0.7rem;color:var(--text-tertiary);background:none;border:none;cursor:pointer;text-decoration:underline;padding:0;margin-right:0.5rem;" onclick="event.stopPropagation()">Dismiss All</button>
+                ` : ''}
                 <div style="width:80px;height:4px;background:var(--bg-tertiary);border-radius:99px;overflow:hidden;flex-shrink:0;">
                   <div style="height:100%;width:${progress}%;background:var(--color-primary);border-radius:99px;"></div>
                 </div>
@@ -1300,6 +1312,18 @@ class FullPageDashboard {
         }
       });
     });
+
+    container.querySelectorAll('.au-bulk-dismiss-btn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        const dir = btn.dataset.dir;
+        const status = btn.dataset.status;
+        if (confirm(`Dismiss all ${status} jobs in "${dir}"?`)) {
+          const url = `/api/scan-jobs/bulk?directoryName=${encodeURIComponent(dir)}&status=${status}`;
+          await fetch(url, { method: 'DELETE', credentials: 'include' });
+          this._refreshAutoUpload(container.closest('#dashboard-content'));
+        }
+      });
+    });
     
     // Also attach listeners to any top-level individual jobs
     this._attachJobEventListeners(container);
@@ -1310,7 +1334,18 @@ class FullPageDashboard {
    */
   _renderJobItem(job, sectionType, isSubItem = false) {
     const isVideo = job.mimeType?.startsWith('video/');
-    const icon = isVideo ? '📹' : '📄';
+    const icon = isVideo ? `
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;color:var(--color-primary);">
+        <circle cx="12" cy="12" r="10"></circle>
+        <polygon points="10 8 16 12 10 16 10 8"></polygon>
+      </svg>
+    ` : `
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;color:var(--color-primary);">
+        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+        <circle cx="8.5" cy="8.5" r="1.5"></circle>
+        <polyline points="21 15 16 10 5 21"></polyline>
+      </svg>
+    `;
     const statusColor = job.status === 'completed' ? 'var(--color-success)' : (job.status === 'failed' ? 'var(--color-error)' : 'var(--color-primary)');
     
     return `
@@ -1318,7 +1353,7 @@ class FullPageDashboard {
         <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:0.4rem;gap:1rem;">
           <div style="flex:1;min-width:0;">
             <div style="display:flex;align-items:center;gap:0.5rem;">
-              <span style="font-size:0.9rem;">${icon}</span>
+              <span style="display:flex;align-items:center;">${icon}</span>
               <span style="font-weight:600;font-size:0.9rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block;">${job.filename}</span>
             </div>
             <div style="font-size:0.75rem;color:var(--text-secondary);margin-top:0.1rem;">
