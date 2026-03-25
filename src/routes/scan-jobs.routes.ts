@@ -118,6 +118,20 @@ export function createScanJobRoutes(
     } catch (err) { next(err); }
   });
 
+  // DELETE /api/scan-jobs/bulk — bulk remove jobs by directory and status
+  router.delete('/bulk', async (req, res, next) => {
+    try {
+      const { directoryName, status } = req.query;
+      if (!status) return res.status(400).json({ error: 'Status is required for bulk delete' });
+      
+      await scanJobRepo.deleteByDirectory(
+        directoryName as string || null, 
+        status as any
+      );
+      res.json({ success: true, message: `Bulk delete for ${status} jobs in ${directoryName || 'root'} completed` });
+    } catch (err) { next(err); }
+  });
+
   // DELETE /api/scan-jobs/:id — remove a completed/failed entry from tracking
   router.delete('/:id', async (req, res, next) => {
     try {
@@ -140,20 +154,6 @@ export function createScanJobRoutes(
 
       await scanJobRepo.markDismissed(job.id);
       res.json({ success: true, message: 'Job dismissed' });
-    } catch (err) { next(err); }
-  });
-
-  // DELETE /api/scan-jobs/bulk — bulk remove jobs by directory and status
-  router.delete('/bulk', async (req, res, next) => {
-    try {
-      const { directoryName, status } = req.query;
-      if (!status) return res.status(400).json({ error: 'Status is required for bulk delete' });
-      
-      await scanJobRepo.deleteByDirectory(
-        directoryName as string || null, 
-        status as any
-      );
-      res.json({ success: true, message: `Bulk delete for ${status} jobs in ${directoryName || 'root'} completed` });
     } catch (err) { next(err); }
   });
 
