@@ -38,16 +38,18 @@ export class ThumbnailService {
       : '';
 
     // Strategy 1: Fast Seek (before -i) — most efficient
-    const fastSeekCmd = `ffmpeg ${networkFlags} -ss ${timestamp} -i "${videoPath}" -vframes 1 -vf "scale=${width}:${height}:force_original_aspect_ratio=decrease" -q:v 2 "${outputPath}"`;
+    // -an: disable audio, -sn: disable subtitles, -error_detect: skip minor errors
+    const baseFlags = '-an -sn -error_detect ignore_err -vsync vfr';
+    const fastSeekCmd = `ffmpeg ${networkFlags} -ss ${timestamp} -i "${videoPath}" -vframes 1 ${baseFlags} -vf "scale=${width}:${height}:force_original_aspect_ratio=decrease" -q:v 2 "${outputPath}"`;
     
     // Strategy 2: Fast Seek with Accurate flag
-    const accurateFastSeekCmd = `ffmpeg ${networkFlags} -ss ${timestamp} -accurate_seek -i "${videoPath}" -vframes 1 -vf "scale=${width}:${height}:force_original_aspect_ratio=decrease" -q:v 2 "${outputPath}"`;
+    const accurateFastSeekCmd = `ffmpeg ${networkFlags} -ss ${timestamp} -accurate_seek -i "${videoPath}" -vframes 1 ${baseFlags} -vf "scale=${width}:${height}:force_original_aspect_ratio=decrease" -q:v 2 "${outputPath}"`;
     
     // Strategy 3: Slow Seek (after -i) — most compatible for difficult streams
-    const slowSeekCmd = `ffmpeg ${networkFlags} -i "${videoPath}" -ss ${timestamp} -vframes 1 -vf "scale=${width}:${height}:force_original_aspect_ratio=decrease" -q:v 2 "${outputPath}"`;
+    const slowSeekCmd = `ffmpeg ${networkFlags} -i "${videoPath}" -ss ${timestamp} -vframes 1 ${baseFlags} -vf "scale=${width}:${height}:force_original_aspect_ratio=decrease" -q:v 2 "${outputPath}"`;
     
     // Strategy 4: Fallback to beginning of video (if deep seek fails)
-    const fallbackStartCmd = `ffmpeg ${networkFlags} -ss 1 -i "${videoPath}" -vframes 1 -vf "scale=${width}:${height}:force_original_aspect_ratio=decrease" -q:v 2 "${outputPath}"`;
+    const fallbackStartCmd = `ffmpeg ${networkFlags} -ss 1 -i "${videoPath}" -vframes 1 ${baseFlags} -vf "scale=${width}:${height}:force_original_aspect_ratio=decrease" -q:v 2 "${outputPath}"`;
 
     const strategies = [
       { name: 'Fast Seek', cmd: fastSeekCmd },
@@ -61,7 +63,9 @@ export class ThumbnailService {
     for (const strategy of strategies) {
       try {
         logger.debug({ strategy: strategy.name, videoPath, timestamp }, 'Attempting video frame capture');
-        await execAsync(strategy.cmd, { timeout: 45000 }); // 45s timeout for difficult seeks
+        // Increase timeout for Slow Seek as it might need to download more data
+        const timeout = strategy.name === 'Slow Seek' ? 60000 : 45000;
+        await execAsync(strategy.cmd, { timeout });
         
         // Read thumbnail and convert to base64
         const thumbnailBuffer = await readFile(outputPath);

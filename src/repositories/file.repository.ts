@@ -27,6 +27,8 @@ export interface FileListOptions {
   providerType?: ProviderType;
   mimeType?: string;
   category?: string;
+  sortBy?: string;
+  sortOrder?: 'ASC' | 'DESC';
 }
 
 export class FileRepository {
@@ -143,7 +145,18 @@ export class FileRepository {
       }
     }
 
-    query += ` ORDER BY uploaded_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+    // Determine sort order
+    const sortBy = options.sortBy || 'uploaded_at';
+    const sortOrder = options.sortOrder || 'DESC';
+    if (sortBy === 'filename') {
+      // Natural sort: order by string length first, then lexicographic.
+      // This ensures 1.jpg, 2.jpg, 10.jpg instead of 1.jpg, 10.jpg, 2.jpg
+      query += ` ORDER BY length(filename) ${sortOrder}, filename ${sortOrder}`;
+    } else {
+      query += ` ORDER BY ${sortBy} ${sortOrder}`;
+    }
+    
+    query += ` LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
     params.push(limit, offset);
 
     const result = await pool.query<FileRecord>(query, params);
