@@ -609,10 +609,23 @@ class MediaPlayer {
     fullImg.className = 'media-image full-res-image';
     fullImg.alt = escapeHtml(file.filename);
 
-    // Start loading full resolution image
-    fullImg.src = `/api/files/${file.id}/play`;
+    // Check if we already have this image prefetched in the browser cache
+    const imageUrl = `/api/files/${file.id}/play`;
+    const prefetchedImg = this.prefetchCache.get(file.id);
+    
+    if (prefetchedImg && prefetchedImg.complete && prefetchedImg.naturalWidth > 0) {
+      // Image was prefetched and loaded! Use it immediately — no network request.
+      fullImg.src = imageUrl; // Browser serves from HTTP cache instantly
+      // Show it right away without waiting for load event
+      fullImg.style.opacity = '1';
+      thumbnailImg.style.opacity = '0';
+      setTimeout(() => thumbnailImg.remove(), 100);
+    } else {
+      // Not prefetched yet — load from network with blur-to-sharp transition
+      fullImg.src = imageUrl;
+    }
 
-    // Handle full image load
+    // Handle full image load (for non-cached images, this fires after download)
     fullImg.addEventListener('load', () => {
       fullImg.style.opacity = '1';
       thumbnailImg.style.opacity = '0';
@@ -621,10 +634,10 @@ class MediaPlayer {
       setTimeout(() => {
         thumbnailImg.remove();
       }, 500);
-
-      // Prefetch adjacent images for instant navigation
-      this.prefetchAdjacentImages();
     });
+
+    // Kick off prefetch for upcoming images IMMEDIATELY (don't wait for current load)
+    this.prefetchAdjacentImages();
 
     // Handle image errors
     fullImg.addEventListener('error', () => {
@@ -867,13 +880,20 @@ class MediaPlayer {
   prefetchAdjacentImages() {
     if (this.fileList.length <= 1) return;
 
-    // Prefetch next 3 and previous 1
+    // Build a list of indices to prefetch: current (for cache), next 3, and previous 1
     const indicesToPrefetch = [];
+    
+    // Current image (so subsequent navigation finds it in cache)
+    indicesToPrefetch.push(this.currentIndex);
+    
+    // Next 3 images ahead
     for (let i = 1; i <= 3; i++) {
       if (this.currentIndex + i < this.fileList.length) {
         indicesToPrefetch.push(this.currentIndex + i);
       }
     }
+    
+    // Previous 1 image (for back navigation)
     if (this.currentIndex - 1 >= 0) {
       indicesToPrefetch.push(this.currentIndex - 1);
     }

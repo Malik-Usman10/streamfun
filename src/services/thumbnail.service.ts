@@ -38,8 +38,8 @@ export class ThumbnailService {
       : '';
 
     // Strategy 1: Fast Seek (before -i) — most efficient
-    // -an: disable audio, -sn: disable subtitles, -error_detect: skip minor errors
-    const baseFlags = '-an -sn -error_detect ignore_err -vsync vfr';
+    // -an: disable audio, -sn: disable subtitles, -fflags: tolerate corrupt frames
+    const baseFlags = '-an -sn -fflags +discardcorrupt+genpts -y';
     const fastSeekCmd = `ffmpeg ${networkFlags} -ss ${timestamp} -i "${videoPath}" -vframes 1 ${baseFlags} -vf "scale=${width}:${height}:force_original_aspect_ratio=decrease" -q:v 2 "${outputPath}"`;
     
     // Strategy 2: Fast Seek with Accurate flag
