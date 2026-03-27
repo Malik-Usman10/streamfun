@@ -132,6 +132,14 @@ const api = {
       params.append('limit', options.limit);
     }
 
+    if (options.sortBy) {
+      params.append('sortBy', options.sortBy);
+    }
+
+    if (options.sortOrder) {
+      params.append('sortOrder', options.sortOrder);
+    }
+
     const url = `${API_BASE}/files/gallery${params.toString() ? '?' + params.toString() : ''}`;
     return await apiCallWithRetry(url);
   },

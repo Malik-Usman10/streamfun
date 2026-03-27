@@ -115,10 +115,10 @@ class HomePage {
 
           <section class="slider-section" style="margin-bottom: 60px;">
             <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 16px;">
-              <h2 style="font-size: 1.5rem; font-weight: 600; color: var(--text-primary);">Recently Added Photos</h2>
+              <h2 style="font-size: 1.5rem; font-weight: 600; color: var(--text-primary);">Recently Added Collections</h2>
               <a href="#" id="view-all-images" style="color: var(--color-primary); text-decoration: none; font-weight: 600; font-size: 0.9rem;">View All →</a>
             </div>
-            <div id="recent-images-slider" class="media-slider" style="display: flex; gap: 16px; overflow-x: auto; padding-bottom: 16px; scroll-snap-type: x mandatory; scrollbar-width: none; -ms-overflow-style: none;">
+            <div id="recent-collections-slider" class="media-slider" style="display: flex; gap: 16px; overflow-x: auto; padding-bottom: 16px; scroll-snap-type: x mandatory; scrollbar-width: none; -ms-overflow-style: none;">
               <!-- Cards injected here via JS -->
               <div class="loading-spinner" style="margin: 40px auto; width: 30px; height: 30px;"></div>
             </div>
@@ -139,17 +139,17 @@ class HomePage {
    */
   async loadRecentMedia() {
     try {
-      // Fetch recent videos & images in parallel
-      const [videosData, imagesData] = await Promise.all([
+      // Fetch recent videos & image collections in parallel
+      const [videosData, imageCategories] = await Promise.all([
         api.fetchFilesPaginated({ type: 'video', limit: 15, page: 1 }),
-        api.fetchFilesPaginated({ type: 'image', limit: 15, page: 1 })
+        api.fetchCategories('image')
       ]);
 
       const vSlider = this.container.querySelector('#recent-videos-slider');
-      const iSlider = this.container.querySelector('#recent-images-slider');
+      const cSlider = this.container.querySelector('#recent-collections-slider');
       
       vSlider.innerHTML = '';
-      iSlider.innerHTML = '';
+      cSlider.innerHTML = '';
 
       if (!videosData.items?.length) {
         vSlider.innerHTML = `<div style="padding: 24px; color: var(--text-muted); background: var(--bg-tertiary); border-radius: 12px; border: 1px dashed var(--border-color); width: 100%;">No recent videos found.</div>`;
@@ -157,14 +157,85 @@ class HomePage {
         videosData.items.forEach(file => vSlider.appendChild(this.createMediaCard(file, true)));
       }
 
-      if (!imagesData.items?.length) {
-        iSlider.innerHTML = `<div style="padding: 24px; color: var(--text-muted); background: var(--bg-tertiary); border-radius: 12px; border: 1px dashed var(--border-color); width: 100%;">No recent photos found.</div>`;
+      if (!imageCategories?.length) {
+        cSlider.innerHTML = `<div style="padding: 24px; color: var(--text-muted); background: var(--bg-tertiary); border-radius: 12px; border: 1px dashed var(--border-color); width: 100%;">No collections found.</div>`;
       } else {
-        imagesData.items.forEach(file => iSlider.appendChild(this.createMediaCard(file, false)));
+        // Show up to 15 most recent collections
+        imageCategories.slice(0, 15).forEach(cat => cSlider.appendChild(this.createCollectionCard(cat)));
       }
     } catch (err) {
       console.error('Failed to load recent media:', err);
     }
+  }
+
+  createCollectionCard(category) {
+    const card = createElement('div', { 
+      className: 'media-card',
+      style: `
+        flex: 0 0 auto; 
+        scroll-snap-align: start; 
+        width: 300px; 
+        background: var(--bg-tertiary); 
+        border-radius: var(--radius-lg); 
+        overflow: hidden; 
+        cursor: pointer; 
+        transition: transform 0.2s, box-shadow 0.2s;
+        border: 1px solid var(--border-color);
+      `
+    });
+
+    const thumbStyle = `
+      width: 100%;
+      height: 170px;
+      object-fit: cover;
+      background: var(--bg-secondary);
+    `;
+
+    const imgHtml = category.thumbnail 
+      ? `<img src="${category.thumbnail}" alt="${escapeHtml(category.name)}" style="${thumbStyle}" loading="lazy">` 
+      : `<div style="${thumbStyle}; display:flex; align-items:center; justify-content:center; color: var(--text-muted);">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:48px; height:48px;">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+            <circle cx="8.5" cy="8.5" r="1.5"></circle>
+            <polyline points="21 15 16 10 5 21"></polyline>
+          </svg>
+         </div>`;
+
+    card.innerHTML = `
+      <div style="position: relative;">
+        ${imgHtml}
+        <div style="position: absolute; bottom: 8px; right: 8px; background: rgba(0,0,0,0.7); padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: bold; color: white; backdrop-filter: blur(4px);">
+          ${category.count} ${category.count === 1 ? 'photo' : 'photos'}
+        </div>
+      </div>
+      <div style="padding: 12px 16px;">
+        <h3 style="margin: 0 0 4px 0; font-size: 1rem; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${escapeHtml(category.name)}">
+          ${escapeHtml(category.name)}
+        </h3>
+        <p style="margin: 0; font-size: 0.85rem; color: var(--text-muted);">${category.count} photos</p>
+      </div>
+    `;
+
+    card.addEventListener('mouseenter', () => {
+      card.style.transform = 'translateY(-4px)';
+      card.style.borderColor = 'var(--color-primary)';
+      card.style.boxShadow = '0 10px 20px rgba(0,0,0,0.5)';
+    });
+    
+    card.addEventListener('mouseleave', () => {
+      card.style.transform = '';
+      card.style.borderColor = 'var(--border-color)';
+      card.style.boxShadow = '';
+    });
+
+    // Navigate to image categories → open this specific collection
+    card.addEventListener('click', () => {
+      window.dispatchEvent(new CustomEvent('navigate:images', {
+        detail: { openCategory: category.name }
+      }));
+    });
+
+    return card;
   }
 
   createMediaCard(file, isVideo) {

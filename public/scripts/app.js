@@ -104,9 +104,13 @@ router.register('videos', () => {
   return categoryView;
 });
 
-router.register('images', () => {
+router.register('images', (params) => {
   const categoryView = new CategoryView(appRoot, 'images');
   categoryView.render();
+  // If a specific category was requested (e.g. from home screen collection card), open it
+  if (params && params.openCategory) {
+    categoryView.openCategory(params.openCategory);
+  }
   return categoryView;
 });
 
@@ -125,8 +129,8 @@ window.addEventListener('navigate:videos', () => {
   router.navigate('videos');
 });
 
-window.addEventListener('navigate:images', () => {
-  router.navigate('images');
+window.addEventListener('navigate:images', (e) => {
+  router.navigate('images', e.detail || {});
 });
 
 window.addEventListener('navigate:dashboard', () => {

@@ -51,6 +51,8 @@ export interface Config {
     uploadConcurrency: number;
     integrityConcurrency: number;
     priorityConcurrency: number;
+    maxParallelDownloads: number;
+    prefetchCount: number;
   };
   rateLimit: {
     window: number;
@@ -125,6 +127,8 @@ export const appConfig: Config = {
     uploadConcurrency: getEnvNumber('UPLOAD_CONCURRENCY', 2),
     integrityConcurrency: getEnvNumber('INTEGRITY_CONCURRENCY', 5),
     priorityConcurrency: getEnvNumber('PRIORITY_CONCURRENCY', 2),
+    maxParallelDownloads: getEnvNumber('MAX_PARALLEL_DOWNLOADS', 8),
+    prefetchCount: getEnvNumber('PREFETCH_COUNT', 3),
   },
   rateLimit: {
     window: getEnvNumber('RATE_LIMIT_WINDOW', 60),

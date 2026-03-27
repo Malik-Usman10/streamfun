@@ -205,6 +205,19 @@
   transition: opacity 0.4s ease-in-out, filter 0.4s ease-in-out;
 }
 
+/* Fullscreen Optimizations */
+#media-player-modal:fullscreen .media-video,
+#media-player-modal:fullscreen .image-viewer-container,
+#media-player-modal:fullscreen .media-image {
+  border-radius: 0;
+}
+
+#media-player-modal:fullscreen .media-player-content {
+  padding: 0;
+  max-width: 100vw;
+  max-height: 100vh;
+}
+
 .image-viewer-container {
   position: relative;
   width: 100%;
@@ -424,15 +437,6 @@
   }
 }
 
-
-/* Custom Video Player Styles */
-.media-video {
-  width: 100%;
-  height: auto;
-  max-height: 85vh;
-  background-color: black;
-  border-radius: var(--radius-lg);
-}
 
 .custom-video-controls {
   position: absolute;

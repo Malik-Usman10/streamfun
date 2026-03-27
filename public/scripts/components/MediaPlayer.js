@@ -23,6 +23,7 @@ class MediaPlayer {
     this.currentIndex = -1;
     this.focusTrap = null;
     this.isClosing = false;
+    this.prefetchCache = new Map(); // Cache of prefetched Image objects by file ID
 
     this.init();
   }
@@ -620,6 +621,9 @@ class MediaPlayer {
       setTimeout(() => {
         thumbnailImg.remove();
       }, 500);
+
+      // Prefetch adjacent images for instant navigation
+      this.prefetchAdjacentImages();
     });
 
     // Handle image errors
@@ -856,6 +860,33 @@ class MediaPlayer {
     }
 
     this.container.replaceWith(this.container.cloneNode(true));
+  }
+  /**
+   * Prefetch the next 3 adjacent images for instant navigation
+   */
+  prefetchAdjacentImages() {
+    if (this.fileList.length <= 1) return;
+
+    // Prefetch next 3 and previous 1
+    const indicesToPrefetch = [];
+    for (let i = 1; i <= 3; i++) {
+      if (this.currentIndex + i < this.fileList.length) {
+        indicesToPrefetch.push(this.currentIndex + i);
+      }
+    }
+    if (this.currentIndex - 1 >= 0) {
+      indicesToPrefetch.push(this.currentIndex - 1);
+    }
+
+    for (const idx of indicesToPrefetch) {
+      const file = this.fileList[idx];
+      if (!file || !file.mimeType?.startsWith('image/')) continue;
+      if (this.prefetchCache.has(file.id)) continue;
+
+      const img = new Image();
+      img.src = `/api/files/${file.id}/play`;
+      this.prefetchCache.set(file.id, img);
+    }
   }
 }
 

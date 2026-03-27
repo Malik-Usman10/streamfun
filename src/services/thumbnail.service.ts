@@ -23,7 +23,7 @@ export class ThumbnailService {
   private readonly defaultQuality = 85;
 
   /**
-   * Generate thumbnail from video file
+   * Generate thumbnail from video file with robust fallback logic
    */
   async generateVideoThumbnail(
     videoPath: string,
@@ -32,34 +32,61 @@ export class ThumbnailService {
     const { width = this.defaultWidth, height = this.defaultHeight, timestamp = 5 } = options;
     const outputPath = join(tmpdir(), `thumb-${uuidv4()}.jpg`);
 
-    try {
-      // Extract frame at specified timestamp using ffmpeg
-      await execAsync(
-        `ffmpeg -ss ${timestamp} -i "${videoPath}" -vframes 1 -vf "scale=${width}:${height}:force_original_aspect_ratio=decrease" -q:v 2 "${outputPath}"`,
-        { timeout: 30000 }
-      );
+    // Common flags for network resilience
+    const networkFlags = videoPath.startsWith('http') 
+      ? '-reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 2' 
+      : '';
 
-      // Read thumbnail and convert to base64
-      const thumbnailBuffer = await readFile(outputPath);
-      const base64 = thumbnailBuffer.toString('base64');
-      const dataUrl = `data:image/jpeg;base64,${base64}`;
+    // Strategy 1: Fast Seek (before -i) — most efficient
+    const fastSeekCmd = `ffmpeg ${networkFlags} -ss ${timestamp} -i "${videoPath}" -vframes 1 -vf "scale=${width}:${height}:force_original_aspect_ratio=decrease" -q:v 2 "${outputPath}"`;
+    
+    // Strategy 2: Fast Seek with Accurate flag
+    const accurateFastSeekCmd = `ffmpeg ${networkFlags} -ss ${timestamp} -accurate_seek -i "${videoPath}" -vframes 1 -vf "scale=${width}:${height}:force_original_aspect_ratio=decrease" -q:v 2 "${outputPath}"`;
+    
+    // Strategy 3: Slow Seek (after -i) — most compatible for difficult streams
+    const slowSeekCmd = `ffmpeg ${networkFlags} -i "${videoPath}" -ss ${timestamp} -vframes 1 -vf "scale=${width}:${height}:force_original_aspect_ratio=decrease" -q:v 2 "${outputPath}"`;
+    
+    // Strategy 4: Fallback to beginning of video (if deep seek fails)
+    const fallbackStartCmd = `ffmpeg ${networkFlags} -ss 1 -i "${videoPath}" -vframes 1 -vf "scale=${width}:${height}:force_original_aspect_ratio=decrease" -q:v 2 "${outputPath}"`;
 
-      // Clean up temp file
-      await unlink(outputPath);
+    const strategies = [
+      { name: 'Fast Seek', cmd: fastSeekCmd },
+      { name: 'Accurate Fast Seek', cmd: accurateFastSeekCmd },
+      { name: 'Slow Seek', cmd: slowSeekCmd },
+      { name: 'Fallback Start', cmd: fallbackStartCmd }
+    ];
 
-      logger.info({ videoPath, timestamp }, 'Video thumbnail generated');
+    let lastError = null;
 
-      return dataUrl;
-    } catch (error: any) {
-      logger.error({ error: error.message, videoPath }, 'Failed to generate video thumbnail');
-      
-      // Clean up on error
+    for (const strategy of strategies) {
       try {
+        logger.debug({ strategy: strategy.name, videoPath, timestamp }, 'Attempting video frame capture');
+        await execAsync(strategy.cmd, { timeout: 45000 }); // 45s timeout for difficult seeks
+        
+        // Read thumbnail and convert to base64
+        const thumbnailBuffer = await readFile(outputPath);
+        const base64 = thumbnailBuffer.toString('base64');
+        const dataUrl = `data:image/jpeg;base64,${base64}`;
+
+        // Clean up temp file
         await unlink(outputPath);
-      } catch {}
-      
-      throw new Error(`Thumbnail generation failed: ${error.message}`);
+        logger.info({ strategy: strategy.name, timestamp }, 'Video thumbnail generated successfully');
+        return dataUrl;
+      } catch (error: any) {
+        lastError = error;
+        logger.warn({ 
+          strategy: strategy.name, 
+          error: error.message, 
+          stderr: error.stderr?.substring(0, 500) 
+        }, 'Video capture strategy failed');
+        
+        // Clean up temp file if it was partially created
+        try { await unlink(outputPath); } catch {}
+      }
     }
+
+    logger.error({ videoPath, timestamp, lastError: lastError?.message }, 'All video thumbnail strategies failed');
+    throw new Error(`Video thumbnail generation failed after all attempts: ${lastError?.message}`);
   }
 
   /**

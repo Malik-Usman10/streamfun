@@ -169,6 +169,8 @@ export function createFileRoutes(fileService: FileService, streamService: Stream
       const limit = parseInt(req.query.limit as string) || 50;
       const fileType = req.query.type as string; // 'image' or 'video'
       const category = req.query.category as string; // specific category filter
+      const sortBy = req.query.sortBy as string;
+      const sortOrder = req.query.sortOrder as string;
 
       // Map file type to MIME type prefix
       let mimeType: string | undefined;
@@ -183,6 +185,8 @@ export function createFileRoutes(fileService: FileService, streamService: Stream
         limit,
         mimeType,
         category,
+        sortBy: sortBy === 'filename' ? 'filename' : undefined,
+        sortOrder: sortOrder === 'ASC' ? 'ASC' : undefined,
       });
 
       // Generate thumbnail/streaming URLs for gallery items

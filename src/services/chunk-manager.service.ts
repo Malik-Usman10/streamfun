@@ -44,7 +44,8 @@ interface UploadMetadata {
 export class ChunkManager {
   private defaultChunkSize = appConfig.upload.chunkSize;
   private uploadMetadata: Map<string, UploadMetadata> = new Map();
-  private concurrencyLimiter: ConcurrencyLimiter;
+  private uploadLimiter: ConcurrencyLimiter;
+  private downloadLimiter: ConcurrencyLimiter;
   private thumbnailService: ThumbnailService;
   private cacheService: CacheService;
   private chunkCacheTTL = 3600; // 1 hour cache for chunks
@@ -58,7 +59,8 @@ export class ChunkManager {
     private providerFactory: ProviderFactory,
     private encryptionService: FileEncryptionService
   ) {
-    this.concurrencyLimiter = new ConcurrencyLimiter(appConfig.upload.maxParallelChunks);
+    this.uploadLimiter = new ConcurrencyLimiter(appConfig.upload.maxParallelChunks);
+    this.downloadLimiter = new ConcurrencyLimiter(appConfig.upload.maxParallelDownloads);
     this.thumbnailService = new ThumbnailService();
     this.cacheService = new CacheService();
   }
@@ -219,7 +221,7 @@ export class ChunkManager {
   ): ReadableStream {
     const signal = abortController.signal;
     let currentChunk = startChunk;
-    const PREFETCH_COUNT = 1; // Reduced from 2 to prevent overwhelming providers
+    const PREFETCH_COUNT = appConfig.upload.prefetchCount; // Configurable, default 3
 
     // Helper: download and decrypt a single chunk (streamed and cached on-the-fly)
     const fetchChunkStream = async (chunkIndex: number): Promise<ReadableStream> => {
@@ -245,9 +247,9 @@ export class ChunkManager {
       }
 
       // 1. Get encrypted stream from provider
-      // Use concurrency limiter to avoid spawning too many rclone processes at once
+      // Use download-specific concurrency limiter to avoid starving uploads
       const getEncryptedStream = async () => {
-        return await this.concurrencyLimiter.run(async () => {
+        return await this.downloadLimiter.run(async () => {
           if (signal.aborted) throw new Error('Stream aborted');
           return await provider.downloadFile(account, chunk.providerFileId);
         });
@@ -279,7 +281,7 @@ export class ChunkManager {
 
     // Start prefetching: kick off downloads for the first few chunks immediately
     const startPrefetch = (fromIndex: number) => {
-      for (let i = fromIndex; i < Math.min(fromIndex + PREFETCH_COUNT, endChunk); i++) {
+      for (let i = fromIndex; i <= Math.min(fromIndex + PREFETCH_COUNT - 1, endChunk); i++) {
         if (!prefetchPromises.has(i)) {
           prefetchPromises.set(i, fetchChunkStream(i));
         }
@@ -766,7 +768,7 @@ export class ChunkManager {
 
     const results = await Promise.allSettled(
       chunks.map((chunk) =>
-        this.concurrencyLimiter.run(async () => {
+        this.uploadLimiter.run(async () => {
           await this.uploadChunkData(fileId, chunk.index, chunk.stream, chunk.size);
           return chunk.index;
         })

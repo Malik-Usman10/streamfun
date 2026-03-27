@@ -364,7 +364,9 @@ class CategoryView {
         type: this.fileType === 'images' ? 'image' : 'video',
         category: categoryName,
         page: 1,
-        limit: 50
+        limit: 50,
+        sortBy: 'filename',
+        sortOrder: 'ASC'
       });
 
       // Update app state

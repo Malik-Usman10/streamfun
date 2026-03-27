@@ -260,18 +260,18 @@ export class FileRepository {
       "SELECT * FROM files WHERE filename = $1 AND size = $2 AND COALESCE(collection_name, '') = $3 LIMIT 1",
       [filename, size, collectionName || '']
     );
-    
+
     if (result.rows.length === 0) return null;
-    
+
     const file = this.mapRow(result.rows[0]);
-    
+
     // If the file is specifically marked as corrupted, we treat it as if it doesn't exist
     // so the auto-uploader can try again.
     const metadata = file.metadata as any;
     if (metadata && metadata.corrupted === true) {
       return null;
     }
-    
+
     return file;
   }
 
