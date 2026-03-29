@@ -604,39 +604,48 @@ class MediaPlayer {
     thumbnailImg.alt = `${escapeHtml(file.filename)} (loading)`;
     thumbnailImg.src = file.thumbnail || '';
 
-    // 2. Full Resolution Layer (Loading in background)
+    // 2. Full Resolution Layer
     const fullImg = document.createElement('img');
     fullImg.className = 'media-image full-res-image';
     fullImg.alt = escapeHtml(file.filename);
 
-    // Check if we already have this image prefetched in the browser cache
     const imageUrl = `/api/files/${file.id}/play`;
     const prefetchedImg = this.prefetchCache.get(file.id);
-    
-    if (prefetchedImg && prefetchedImg.complete && prefetchedImg.naturalWidth > 0) {
-      // Image was prefetched and loaded! Use it immediately — no network request.
-      fullImg.src = imageUrl; // Browser serves from HTTP cache instantly
-      // Show it right away without waiting for load event
+
+    // Helper to reveal the full image and remove the blurry thumbnail
+    const revealFullImage = () => {
       fullImg.style.opacity = '1';
       thumbnailImg.style.opacity = '0';
-      setTimeout(() => thumbnailImg.remove(), 100);
+      setTimeout(() => { try { thumbnailImg.remove(); } catch {} }, 500);
+    };
+
+    if (prefetchedImg && prefetchedImg.complete && prefetchedImg.naturalWidth > 0) {
+      // Case A: Prefetch finished — browser cache hit, show instantly
+      fullImg.src = imageUrl;
+      fullImg.style.opacity = '1';
+      thumbnailImg.style.opacity = '0';
+      setTimeout(() => { try { thumbnailImg.remove(); } catch {} }, 100);
+    } else if (prefetchedImg && !prefetchedImg.complete) {
+      // Case B: Prefetch is IN PROGRESS — don't create a duplicate request!
+      // Listen on the prefetched Image object, then assign src to get browser cache hit
+      prefetchedImg.addEventListener('load', () => {
+        fullImg.src = imageUrl; // Browser serves from its HTTP cache
+        revealFullImage();
+      });
+      prefetchedImg.addEventListener('error', () => {
+        // Prefetch failed — fall back to a direct request
+        fullImg.src = imageUrl;
+      });
     } else {
-      // Not prefetched yet — load from network with blur-to-sharp transition
+      // Case C: Not prefetched at all — load fresh
       fullImg.src = imageUrl;
     }
 
-    // Handle full image load (for non-cached images, this fires after download)
-    fullImg.addEventListener('load', () => {
-      fullImg.style.opacity = '1';
-      thumbnailImg.style.opacity = '0';
-      
-      // Delay removal to allow transition to complete
-      setTimeout(() => {
-        thumbnailImg.remove();
-      }, 500);
-    });
+    // For cases B and C, also listen on fullImg's own load event
+    fullImg.addEventListener('load', revealFullImage);
 
-    // Kick off prefetch for upcoming images IMMEDIATELY (don't wait for current load)
+    // Cancel stale prefetches and start fresh ones for the new position
+    this.cancelStalePrefetches();
     this.prefetchAdjacentImages();
 
     // Handle image errors
@@ -875,25 +884,40 @@ class MediaPlayer {
     this.container.replaceWith(this.container.cloneNode(true));
   }
   /**
-   * Prefetch the next 3 adjacent images for instant navigation
+   * Cancel prefetch requests for images that are no longer near the current view.
+   * This frees up backend download slots for the image the user is actually looking at.
+   */
+  cancelStalePrefetches() {
+    // Build a set of file IDs that are still relevant (current ±4)
+    const relevantIds = new Set();
+    for (let i = Math.max(0, this.currentIndex - 1); i <= Math.min(this.fileList.length - 1, this.currentIndex + 4); i++) {
+      const f = this.fileList[i];
+      if (f) relevantIds.add(f.id);
+    }
+
+    // Cancel any prefetch that is outside the relevant window and still loading
+    for (const [fileId, img] of this.prefetchCache) {
+      if (!relevantIds.has(fileId) && !img.complete) {
+        img.src = ''; // Abort the HTTP request
+        this.prefetchCache.delete(fileId);
+      }
+    }
+  }
+
+  /**
+   * Prefetch the next 3 adjacent images for instant navigation.
+   * Current image is included so it ends up in the browser cache for later.
    */
   prefetchAdjacentImages() {
     if (this.fileList.length <= 1) return;
 
-    // Build a list of indices to prefetch: current (for cache), next 3, and previous 1
-    const indicesToPrefetch = [];
-    
-    // Current image (so subsequent navigation finds it in cache)
-    indicesToPrefetch.push(this.currentIndex);
-    
-    // Next 3 images ahead
+    // Order: current first (highest priority), then next 3, then previous 1
+    const indicesToPrefetch = [this.currentIndex];
     for (let i = 1; i <= 3; i++) {
       if (this.currentIndex + i < this.fileList.length) {
         indicesToPrefetch.push(this.currentIndex + i);
       }
     }
-    
-    // Previous 1 image (for back navigation)
     if (this.currentIndex - 1 >= 0) {
       indicesToPrefetch.push(this.currentIndex - 1);
     }

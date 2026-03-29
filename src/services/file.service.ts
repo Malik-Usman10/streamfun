@@ -11,6 +11,11 @@ import type { ChunkManager } from './chunk-manager.service.js';
 import type { FileRecord, ProviderType } from '../types/index.js';
 import type { FileUpload } from '../types/provider.js';
 import { UploadError, DownloadError, FileNotFoundError } from '../utils/errors.js';
+import { createWriteStream } from 'fs';
+import { unlink } from 'fs/promises';
+import { join } from 'path';
+import { tmpdir } from 'os';
+import { v4 as uuidv4 } from 'uuid';
 import logger from '../utils/logger.js';
 
 export class FileService {
@@ -444,20 +449,51 @@ export class FileService {
         return [thumbnail];
     }
 
-    // For videos, try to get duration and generate distributed frames
+    // For videos: download to local temp file first, then extract frames.
+    // This is the StashApp/Plex approach — FFmpeg can seek instantly in local files,
+    // unlike HTTP streams where seeking to minute 80 means downloading 80 minutes of data.
     if (file.mimeType?.startsWith('video/')) {
-        const { appConfig } = await import('../config/index.js');
-        let videoUrl = `${appConfig.server.apiBaseUrl}/api/files/${fileId}/play?internalToken=${appConfig.server.internalSecret}`;
+        const tempVideoPath = join(tmpdir(), `thumb-video-${uuidv4()}.mp4`);
         
-        // Try to get duration using ffprobe
-        const duration = await this.thumbnailService.getVideoDuration(videoUrl);
-        
-        if (duration > 0) {
-            return await this.thumbnailService.generateMultipleVideoThumbnails(videoUrl, duration, count);
-        } else {
-            // Fallback: capture just the first frame if duration unknown
-            const thumb = await this.thumbnailService.generateVideoThumbnail(videoUrl, { timestamp: 1 });
-            return [thumb];
+        try {
+            // Step 1: Download the full video to a temp file
+            logger.info({ fileId, filename: file.filename, size: file.size }, 'Downloading video to temp file for thumbnail extraction');
+            
+            const { stream } = await this.downloadFile(fileId);
+            const writeStream = createWriteStream(tempVideoPath);
+            const reader = stream.getReader();
+            let bytesWritten = 0;
+            
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                writeStream.write(Buffer.from(value));
+                bytesWritten += value.length;
+            }
+            
+            await new Promise<void>((resolve, reject) => {
+                writeStream.end((err: any) => err ? reject(err) : resolve());
+            });
+            
+            logger.info({ fileId, bytesWritten }, 'Video downloaded to temp file, extracting thumbnails');
+            
+            // Step 2: Get duration from LOCAL file (instant)
+            const duration = await this.thumbnailService.getVideoDuration(tempVideoPath);
+            
+            // Step 3: Extract frames from LOCAL file (fast random-access seeking)
+            if (duration > 0) {
+                return await this.thumbnailService.generateMultipleVideoThumbnails(tempVideoPath, duration, count);
+            } else {
+                // Duration unknown — just grab the first frame
+                const thumb = await this.thumbnailService.generateVideoThumbnail(tempVideoPath, { timestamp: 1 });
+                return [thumb];
+            }
+        } catch (error: any) {
+            logger.error({ error: error.message, fileId }, 'Video thumbnail generation failed');
+            throw error;
+        } finally {
+            // Always clean up the temp file
+            try { await unlink(tempVideoPath); } catch {}
         }
     }
 

@@ -185,9 +185,13 @@ export class RcloneStorageProvider implements IStorageProvider {
     let lastError: Error | null = null;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        await execAsync(`rclone copyto "${remoteFilePath}" "${tempFilePath}"`, {
+        const { stderr } = await execAsync(`rclone copyto "${remoteFilePath}" "${tempFilePath}"`, {
           timeout: 300000, // 5 min for large chunks
         });
+
+        if (stderr && (stderr.includes('ERROR') || stderr.includes('error'))) {
+          logger.warn({ remoteFilePath, stderr: stderr.substring(0, 500), attempt }, 'Rclone copyto produced errors');
+        }
 
         // Verify file exists and has data
         const fileStat = await stat(tempFilePath);
@@ -199,7 +203,12 @@ export class RcloneStorageProvider implements IStorageProvider {
         break; // Success
       } catch (err: any) {
         lastError = err;
-        logger.warn({ attempt, maxAttempts, fileId, error: err.message }, 'Rclone copyto download attempt failed');
+        // Distinguish between rclone failure and local file issues
+        const isRcloneError = err.stderr || err.message?.includes('exit code') || err.message?.includes('Command failed');
+        const errorDetail = isRcloneError
+          ? `rclone failed (file may not exist on cloud or account quota exceeded): ${(err.stderr || err.message || '').substring(0, 300)}`
+          : err.message;
+        logger.warn({ attempt, maxAttempts, fileId, error: errorDetail, remoteFilePath }, 'Rclone copyto download attempt failed');
         // Clean up failed temp file
         try { await unlink(tempFilePath); } catch { }
         if (attempt < maxAttempts) {
@@ -209,7 +218,11 @@ export class RcloneStorageProvider implements IStorageProvider {
     }
 
     if (lastError) {
-      throw new Error(`Failed to download chunk after ${maxAttempts} attempts: ${lastError.message}`);
+      const isRcloneError = (lastError as any).stderr || lastError.message?.includes('exit code') || lastError.message?.includes('Command failed');
+      const errorMsg = isRcloneError
+        ? `File may not exist on cloud or cloud account is full. Remote path: ${remoteFilePath}. Error: ${((lastError as any).stderr || lastError.message || '').substring(0, 300)}`
+        : `Failed to download chunk after ${maxAttempts} attempts: ${lastError.message}`;
+      throw new Error(errorMsg);
     }
 
     // Stream the temp file and delete it after consumption

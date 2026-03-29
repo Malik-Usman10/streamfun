@@ -747,10 +747,10 @@ export class ChunkManager {
     // Clean up temporary metadata
     this.uploadMetadata.delete(fileId);
 
-    // Update account quota after successful finalization (increments usage immediately in DB)
-    if (metadata?.accountId) {
-      this.accountSelector.updateQuotaAfterUpload(metadata.accountId, metadata.size).catch(() => { });
-    }
+    // NOTE: Quota update is handled by the caller (e.g. auto-upload.queue.ts)
+    // after finalization, using refreshAccountQuota for accurate values.
+    // Previously this called updateQuotaAfterUpload here too, which caused
+    // double-counting when both the caller and this method incremented quota.
 
     logger.info({ fileId }, 'Chunked upload finalized');
 

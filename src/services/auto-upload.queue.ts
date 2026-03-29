@@ -481,13 +481,19 @@ export class AutoUploadQueue {
           await this.scanJobRepo.markCompleted(scanJobId, fileId);
           logger.info({ scanJobId, filename, fileId }, 'AUTO-UPLOAD: Upload transfer successful');
           
-          // Refresh quota
+          // Refresh quota from provider (await to ensure DB is accurate before next upload)
           if (this.accountService) {
-            this.accountService.refreshAccountQuota(selectedAccountId).catch(() => {});
+            try {
+              await this.accountService.refreshAccountQuota(selectedAccountId);
+            } catch (refreshErr: any) {
+              logger.warn({ error: refreshErr.message, selectedAccountId }, 'Failed to refresh quota after upload, falling back to estimate');
+              // Only use the estimate if the real refresh failed
+              this.accountSelector.updateQuotaAfterUpload(selectedAccountId, fileSize).catch(() => {});
+            }
+          } else {
+            // No accountService — use the estimate
+            this.accountSelector.updateQuotaAfterUpload(selectedAccountId, fileSize).catch(() => {});
           }
-          
-          // Increment usage in database immediately for better UX
-          this.accountSelector.updateQuotaAfterUpload(selectedAccountId, fileSize).catch(() => {});
 
           // INTEGRITY CHECK (Offload to dedicated integrity queue)
           if (this.integrityService) {

@@ -23,8 +23,10 @@ export class AccountRotator {
     
     // Filter accounts with sufficient quota
     const eligibleAccounts = accounts.filter((account) => {
-      const hasQuota = !account.quotaAvailable || account.quotaAvailable >= fileSize;
-      const notFull = !account.quotaUsagePercent || account.quotaUsagePercent < 90;
+      // If quota has been checked (quotaAvailable is not null/undefined), enforce the space requirement
+      const quotaChecked = account.quotaAvailable !== null && account.quotaAvailable !== undefined;
+      const hasQuota = !quotaChecked || Number(account.quotaAvailable) >= fileSize;
+      const notFull = account.quotaUsagePercent === null || account.quotaUsagePercent === undefined || account.quotaUsagePercent < 90;
       return hasQuota && notFull;
     });
     
