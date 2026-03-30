@@ -417,15 +417,16 @@ export class RcloneStorageProvider implements IStorageProvider {
     const remoteName = await this.getRemoteName(account);
     const remotePath = await this.getRemotePath(account);
 
-    try {
-      // Use the remote name and path for the about command
-      // Swift/Blomp requires a container/bucket name (which we store in remotePath)
-      const target = remotePath ? `${remoteName}:${remotePath}` : `${remoteName}:`;
+    // Use the remote name and path for the about command
+    // Swift/Blomp requires a container/bucket name (which we store in remotePath)
+    const target = remotePath ? `${remoteName}:${remotePath}` : `${remoteName}:`;
 
-      logger.debug({ remoteName, target }, 'Fetching quota info for remote');
+    // Strategy 1: Try `rclone about` (works for GDrive, Blomp, OneDrive etc.)
+    try {
+      logger.debug({ remoteName, target }, 'Fetching quota info via rclone about');
 
       const { stdout, stderr } = await execAsync(`rclone about "${target}" --json`, {
-        timeout: 20000, // Increased timeout to 20s for slow providers like GDrive
+        timeout: 20000,
       });
 
       if (stderr && stderr.includes('NOTICE')) {
@@ -434,20 +435,45 @@ export class RcloneStorageProvider implements IStorageProvider {
 
       const aboutInfo = JSON.parse(stdout);
 
-      // If total is missing, rclone about didn't provide useful quota info
-      if (typeof aboutInfo.total !== 'number') {
-        throw new Error('Provider did not return total quota information');
+      if (typeof aboutInfo.total === 'number') {
+        return {
+          total: aboutInfo.total,
+          used: typeof aboutInfo.used === 'number' ? aboutInfo.used : 0,
+          available: typeof aboutInfo.free === 'number' ? aboutInfo.free : Math.max(0, aboutInfo.total - (aboutInfo.used || 0)),
+          unit: 'bytes',
+        };
       }
 
+      // total is missing — fall through to Strategy 2
+      logger.debug({ remoteName }, 'rclone about did not return total, trying rclone size fallback');
+    } catch (aboutError: any) {
+      logger.debug({ remoteName, error: aboutError.message }, 'rclone about failed, trying rclone size fallback');
+    }
+
+    // Strategy 2: Try `rclone size` to at least get used space.
+    // Providers like Filen/Koofr/WebDAV don't support `about` but can list their files.
+    // This lets us compute used space even without a quota endpoint.
+    try {
+      const { stdout } = await execAsync(`rclone size "${target}" --json`, {
+        timeout: 60000, // Can be slow for large remotes
+      });
+
+      const sizeInfo = JSON.parse(stdout);
+      const usedBytes = typeof sizeInfo.bytes === 'number' ? sizeInfo.bytes : 0;
+
+      logger.info({ remoteName, usedBytes }, 'Got used space via rclone size (no total quota available from provider)');
+
+      // We know the used space but NOT the total capacity.
+      // Return 0 for total so the caller knows it must use the DB fallback for capacity.
       return {
-        total: aboutInfo.total,
-        used: typeof aboutInfo.used === 'number' ? aboutInfo.used : 0,
-        available: typeof aboutInfo.free === 'number' ? aboutInfo.free : 0,
+        total: 0,
+        used: usedBytes,
+        available: 0,
         unit: 'bytes',
       };
-    } catch (error: any) {
-      logger.error({ error: error.message, remoteName }, 'Failed to get quota info from rclone');
-      throw new Error(`Failed to get quota info: ${error.message}`);
+    } catch (sizeError: any) {
+      logger.warn({ remoteName, error: sizeError.message }, 'Both rclone about and rclone size failed');
+      throw new Error(`Failed to get quota info: rclone about and rclone size both failed for ${remoteName}`);
     }
   }
 

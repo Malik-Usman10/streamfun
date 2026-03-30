@@ -199,10 +199,10 @@ export class AccountSelector {
     const provider = this.providerFactory.getProvider(account.providerType);
     
     // Refresh quota from provider
-    const timeoutMs = 20000; // 20 seconds timeout for quota check
+    const timeoutMs = 30000; // 30 seconds timeout for quota check (covers rclone size fallback)
     let timeoutHandle: any;
 
-    const timeoutPromise = new Promise<any>((_, reject) => { // Changed QuotaInfo to any to match provider.getQuotaInfo return type
+    const timeoutPromise = new Promise<any>((_, reject) => {
       timeoutHandle = setTimeout(() => {
         reject(new Error(`Quota refresh timed out after ${timeoutMs}ms`));
       }, timeoutMs);
@@ -210,55 +210,105 @@ export class AccountSelector {
 
     try {
       const quota = await Promise.race([
-        provider.getQuotaInfo(account), // Original call
+        provider.getQuotaInfo(account),
         timeoutPromise
       ]);
       
       clearTimeout(timeoutHandle);
       
+      let totalSpace = quota.total || 0;
+      let usedSpace = quota.used || 0;
+      let availableSpace = quota.available || 0;
+
+      // If the provider reported total=0, it doesn't support quota reporting (e.g. Filen, Koofr).
+      // Use the previously stored total from the DB if we have one (set manually or from a prior successful check).
+      if (totalSpace === 0 && account.quotaTotal && Number(account.quotaTotal) > 0) {
+        totalSpace = Number(account.quotaTotal);
+        availableSpace = Math.max(0, totalSpace - usedSpace);
+        logger.info({ accountId, totalSpace, usedSpace, availableSpace }, 
+          'Provider did not report total capacity, using DB-stored quota_total');
+      }
+
+      // If we still have no total, try to estimate used space from DB file sizes
+      if (totalSpace === 0 && usedSpace === 0) {
+        const dbUsed = await this.estimateUsedSpaceFromDB(accountId);
+        if (dbUsed > 0) {
+          usedSpace = dbUsed;
+          logger.info({ accountId, dbUsed }, 'Estimated used space from DB file records');
+        }
+      }
+
+      // Compute available and usage percent
+      if (totalSpace > 0) {
+        availableSpace = Math.max(0, totalSpace - usedSpace);
+      }
+      const usagePercent = totalSpace > 0 ? (usedSpace / totalSpace) * 100 : 0;
+
       const quotaInfo: QuotaInfo = {
         accountId,
-        totalSpace: quota.total || 0,
-        usedSpace: quota.used || 0,
-        availableSpace: quota.available || 0,
+        totalSpace,
+        usedSpace,
+        availableSpace,
         lastUpdated: new Date()
       };
 
       // Update accounts table cache
       await this.accountRepository.updateQuota(accountId, {
-        total: quota.total,
-        used: quota.used,
-        available: quota.available, // This is free bytes
-        usagePercent: quota.total ? (quota.used / quota.total) * 100 : 0,
+        total: totalSpace,
+        used: usedSpace,
+        available: availableSpace,
+        usagePercent,
         lastCheckedAt: new Date()
       });
       
-      logger.info({ accountId, availableSpace: quota.available }, 'Quota refreshed');
+      logger.info({ accountId, totalSpace, usedSpace, availableSpace, usagePercent: usagePercent.toFixed(1) }, 'Quota refreshed');
       
       return quotaInfo;
     } catch (error: any) {
+      clearTimeout(timeoutHandle);
       logger.warn({ accountId, error: error.message }, 'Failed to refresh quota from provider, trying last known value in database');
       
       // Try to get last known quota from DB
-      const account = await this.accountRepository.findById(accountId);
-      if (account && account.quotaTotal !== null) {
+      const freshAccount = await this.accountRepository.findById(accountId);
+      if (freshAccount && freshAccount.quotaTotal !== null && Number(freshAccount.quotaTotal) > 0) {
         return {
           accountId,
-          totalSpace: Number(account.quotaTotal),
-          usedSpace: Number(account.quotaUsed || 0),
-          availableSpace: Number(account.quotaAvailable || 0),
-          lastUpdated: account.quotaLastCheckedAt || new Date(),
+          totalSpace: Number(freshAccount.quotaTotal),
+          usedSpace: Number(freshAccount.quotaUsed || 0),
+          availableSpace: Number(freshAccount.quotaAvailable || 0),
+          lastUpdated: freshAccount.quotaLastCheckedAt || new Date(),
         };
       }
 
-      // Final fallback to 100 GB default
+      // Last resort: estimate used from DB, report 0 total (account won't be selected for uploads,
+      // which is safer than blindly assuming 100GB free)
+      const dbUsed = await this.estimateUsedSpaceFromDB(accountId);
       return {
         accountId,
-        totalSpace: 100 * 1024 * 1024 * 1024,
-        usedSpace: 0,
-        availableSpace: 100 * 1024 * 1024 * 1024,
+        totalSpace: 0,
+        usedSpace: dbUsed,
+        availableSpace: 0,
         lastUpdated: new Date(),
       };
+    }
+  }
+
+  /**
+   * Estimate used space from DB file records for an account.
+   * Used when the provider doesn't support quota/about commands.
+   */
+  private async estimateUsedSpaceFromDB(accountId: string): Promise<number> {
+    try {
+      const result = await pool.query(
+        `SELECT COALESCE(SUM(f.size), 0) as total_used
+         FROM files f
+         WHERE f.account_id = $1`,
+        [accountId]
+      );
+      return parseInt(result.rows[0]?.total_used || '0', 10);
+    } catch (err) {
+      logger.warn({ accountId, err }, 'Failed to estimate used space from DB');
+      return 0;
     }
   }
 
@@ -312,19 +362,55 @@ export class AccountSelector {
       accountsWithQuota.push(...batchResults);
     }
     
-    // Filter and sort
+    // Filter and sort — enforce 90% usage threshold to prevent overfilling
+    const MAX_USAGE_PERCENT = 90;
     const validAccounts = accountsWithQuota
-      .filter(a => a.quota.availableSpace >= fileSize)
+      .filter(a => {
+        // Skip accounts where we don't know total capacity (totalSpace=0 means quota unknown)
+        if (a.quota.totalSpace === 0) {
+          logger.debug({ accountId: a.account.id, provider: a.account.providerType }, 
+            'Skipping account with unknown total capacity for upload');
+          return false;
+        }
+        // Must have enough space for the file
+        if (a.quota.availableSpace < fileSize) return false;
+        // Must be under 90% full
+        const usagePercent = a.quota.totalSpace > 0 
+          ? (a.quota.usedSpace / a.quota.totalSpace) * 100 
+          : 0;
+        if (usagePercent >= MAX_USAGE_PERCENT) {
+          logger.debug({ accountId: a.account.id, usagePercent: usagePercent.toFixed(1) }, 
+            'Skipping account over 90% usage threshold');
+          return false;
+        }
+        return true;
+      })
       .sort((a, b) => b.quota.availableSpace - a.quota.availableSpace);
       
     if (validAccounts.length === 0) {
       // Find the account with the most space to give a better error message
       const sortedBySpace = accountsWithQuota.sort((a, b) => b.quota.availableSpace - a.quota.availableSpace);
       const bestSpaceAvailable = sortedBySpace[0]?.quota.availableSpace || 0;
-      throw new Error(`No account has enough space. Need ${fileSize} bytes, best available is ${bestSpaceAvailable} bytes`);
+      const bestUsagePercent = sortedBySpace[0]?.quota.totalSpace 
+        ? ((sortedBySpace[0]?.quota.usedSpace / sortedBySpace[0]?.quota.totalSpace) * 100).toFixed(1)
+        : 'unknown';
+      throw new Error(
+        `No account has enough space or all are over ${MAX_USAGE_PERCENT}% full. ` +
+        `Need ${(fileSize / (1024*1024)).toFixed(1)} MB, best available is ${(bestSpaceAvailable / (1024*1024)).toFixed(1)} MB ` + 
+        `(${bestUsagePercent}% used)`
+      );
     }
     
     const selected = validAccounts[0];
+    logger.info({ 
+      accountId: selected.account.id, 
+      provider: selected.account.providerType,
+      availableSpace: (selected.quota.availableSpace / (1024*1024*1024)).toFixed(2) + ' GB',
+      usagePercent: selected.quota.totalSpace > 0 
+        ? ((selected.quota.usedSpace / selected.quota.totalSpace) * 100).toFixed(1) + '%'
+        : 'unknown'
+    }, 'Selected best account for upload');
+    
     return {
       accountId: selected.account.id,
       account: selected.account,

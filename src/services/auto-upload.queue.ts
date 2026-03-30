@@ -345,16 +345,20 @@ export class AutoUploadQueue {
 
 
     // Check if file already exists in library (final check before starting)
+    // Only skip if the job is brand new (pending) — not when resuming (uploading)
     const existingFile = await this.fileRepo.existsByNameAndSize(filename, fileSize, fullJob.directoryName ?? undefined);
-    if (existingFile && fullJob.status !== 'uploading' && fullJob.status !== 'pending') {
+    if (existingFile && fullJob.status === 'pending' && !fullJob.fileId) {
       logger.info({ filename, fileSize, collection: fullJob.directoryName }, 'File already exists in library, skipping auto-upload');
       
-      // If the scan job doesn't have a fileId yet, point it to the existing one for tracking
-      if (!fullJob.fileId) {
+      // Point scan job to the existing file — wrap in try-catch for FK safety
+      try {
         await this.scanJobRepo.updateFileId(scanJobId, existingFile.id);
+      } catch (fkErr: any) {
+        logger.warn({ scanJobId, fileId: existingFile.id, error: fkErr.message }, 
+          'Failed to link scan job to existing file (file may have been deleted)');
       }
       
-      await this.scanJobRepo.updateStatus(scanJobId, 'completed'); // Mark as completed instead of skipped to show in UI
+      await this.scanJobRepo.updateStatus(scanJobId, 'completed');
       return;
     }
 
@@ -382,10 +386,29 @@ export class AutoUploadQueue {
 
       // Fetch a list of potential accounts to try if the first one fails
       const allAccounts = await this.accountRepositoryFindAllActive();
+      const MAX_USAGE_PERCENT = 90;
       const candidateAccounts = allAccounts
-        .filter(a => (Number(a.quota_available || a.quotaAvailable || 0) >= fileSize))
-        .sort((a, b) => Number(b.quota_available || b.quotaAvailable || 0) - Number(a.quota_available || a.quotaAvailable || 0))
+        .filter(a => {
+          const available = Number(a.quota_available ?? a.quotaAvailable ?? 0);
+          const total = Number(a.quota_total ?? a.quotaTotal ?? 0);
+          const used = Number(a.quota_used ?? a.quotaUsed ?? 0);
+          // Must have known capacity (total > 0) and enough space
+          if (total <= 0) return false;
+          if (available < fileSize) return false;
+          // Must be under 90% full
+          const usagePercent = total > 0 ? (used / total) * 100 : 0;
+          if (usagePercent >= MAX_USAGE_PERCENT) return false;
+          return true;
+        })
+        .sort((a, b) => Number(b.quota_available ?? b.quotaAvailable ?? 0) - Number(a.quota_available ?? a.quotaAvailable ?? 0))
         .slice(0, 3); // Top 3 candidates
+      
+      if (candidateAccounts.length === 0) {
+        const msg = `No cloud accounts have enough space for ${(fileSize / (1024*1024)).toFixed(1)} MB or all are over ${MAX_USAGE_PERCENT}% full`;
+        logger.error({ scanJobId, filename, fileSize }, msg);
+        await this.scanJobRepo.markFailed(scanJobId, msg);
+        throw new Error(msg);
+      }
 
       for (const account of candidateAccounts) {
         selectedAccountId = account.id;
@@ -503,7 +526,24 @@ export class AutoUploadQueue {
           uploadSuccess = true;
           break; // Exit the account loop
         } catch (err: any) {
-          logger.warn({ scanJobId, filename, providerType, error: err.message }, 'AUTO-UPLOAD: Upload attempt failed, trying next account if available');
+          const errMsg = err.message || '';
+          const isQuotaError = errMsg.includes('Too Large Object') || 
+                               errMsg.includes('quota') || 
+                               errMsg.includes('insufficient') ||
+                               errMsg.includes('413') ||
+                               errMsg.includes('507');
+          
+          logger.warn({ 
+            scanJobId, filename, providerType, selectedAccountId,
+            error: errMsg, isQuotaError 
+          }, 'AUTO-UPLOAD: Upload attempt failed, trying next account if available');
+          
+          // If it's a quota/size error, immediately refresh the account's quota
+          // so the next job doesn't try this full account again
+          if (isQuotaError && this.accountService) {
+            this.accountService.refreshAccountQuota(selectedAccountId).catch(() => {});
+          }
+          
           lastError = err;
           currentTry++;
           // continue to next account

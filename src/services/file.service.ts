@@ -456,32 +456,73 @@ export class FileService {
         const tempVideoPath = join(tmpdir(), `thumb-video-${uuidv4()}.mp4`);
         
         try {
-            // Step 1: Download the full video to a temp file
+            // Step 1: Download video to a temp file (tolerant of partial downloads)
+            // For thumbnails, we only need the first few seconds of video data.
+            // If a late chunk fails (e.g. chunk 69 of 70), we still have enough
+            // data to extract thumbnails from the early portion of the video.
             logger.info({ fileId, filename: file.filename, size: file.size }, 'Downloading video to temp file for thumbnail extraction');
             
             const { stream } = await this.downloadFile(fileId);
             const writeStream = createWriteStream(tempVideoPath);
             const reader = stream.getReader();
             let bytesWritten = 0;
+            let downloadComplete = true;
             
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                writeStream.write(Buffer.from(value));
-                bytesWritten += value.length;
+            try {
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    writeStream.write(Buffer.from(value));
+                    bytesWritten += value.length;
+                }
+            } catch (streamError: any) {
+                // A chunk download failed (e.g. missing chunk on cloud).
+                // Don't throw — we can still try to extract thumbnails from
+                // whatever data we already wrote to the temp file.
+                downloadComplete = false;
+                logger.warn({ 
+                    fileId, 
+                    bytesWritten, 
+                    totalSize: file.size, 
+                    percentDownloaded: file.size > 0 ? Math.round((bytesWritten / file.size) * 100) : 0,
+                    error: streamError.message 
+                }, 'Video download interrupted during thumbnail extraction, will attempt with partial data');
+                
+                // Release the reader to clean up rclone processes
+                try { reader.cancel(); } catch {}
             }
             
             await new Promise<void>((resolve, reject) => {
                 writeStream.end((err: any) => err ? reject(err) : resolve());
             });
             
-            logger.info({ fileId, bytesWritten }, 'Video downloaded to temp file, extracting thumbnails');
+            // Need at least some data to work with (at least 1MB for a usable video header)
+            const MIN_BYTES_FOR_THUMBNAIL = 1024 * 1024; // 1MB
+            if (bytesWritten < MIN_BYTES_FOR_THUMBNAIL) {
+                throw new Error(`Insufficient video data for thumbnail extraction: only ${bytesWritten} bytes downloaded (need at least ${MIN_BYTES_FOR_THUMBNAIL})`);
+            }
+            
+            logger.info({ fileId, bytesWritten, downloadComplete }, 'Video data ready for thumbnail extraction');
             
             // Step 2: Get duration from LOCAL file (instant)
-            const duration = await this.thumbnailService.getVideoDuration(tempVideoPath);
+            // For partial files, ffprobe may return a shorter/estimated duration — that's fine
+            let duration = 0;
+            try {
+                duration = await this.thumbnailService.getVideoDuration(tempVideoPath);
+            } catch (durationError: any) {
+                logger.warn({ fileId, error: durationError.message }, 'Could not determine video duration, will extract from start');
+            }
             
             // Step 3: Extract frames from LOCAL file (fast random-access seeking)
             if (duration > 0) {
+                // For partial downloads, limit the seek range to what we actually have
+                if (!downloadComplete && file.size > 0) {
+                    const downloadedFraction = bytesWritten / file.size;
+                    const safeDuration = duration * downloadedFraction * 0.8; // 80% safety margin
+                    const effectiveDuration = Math.max(1, safeDuration);
+                    logger.debug({ fileId, duration, effectiveDuration, downloadedFraction }, 'Using limited duration for partial download');
+                    return await this.thumbnailService.generateMultipleVideoThumbnails(tempVideoPath, effectiveDuration, count);
+                }
                 return await this.thumbnailService.generateMultipleVideoThumbnails(tempVideoPath, duration, count);
             } else {
                 // Duration unknown — just grab the first frame

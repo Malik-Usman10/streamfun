@@ -23,6 +23,9 @@ export class AccountRotator {
     
     // Filter accounts with sufficient quota
     const eligibleAccounts = accounts.filter((account) => {
+      // Skip accounts where total capacity is unknown (0 or null)
+      const totalKnown = account.quotaTotal !== null && account.quotaTotal !== undefined && Number(account.quotaTotal) > 0;
+      if (!totalKnown) return false;
       // If quota has been checked (quotaAvailable is not null/undefined), enforce the space requirement
       const quotaChecked = account.quotaAvailable !== null && account.quotaAvailable !== undefined;
       const hasQuota = !quotaChecked || Number(account.quotaAvailable) >= fileSize;
