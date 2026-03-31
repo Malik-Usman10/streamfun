@@ -1,11 +1,11 @@
-// Rclone-based storage provider adapter
-import { exec, spawn } from 'child_process';
-import { promisify } from 'util';
+import { spawn, ChildProcess } from 'child_process';
 import { createReadStream, createWriteStream } from 'fs';
 import { unlink, stat } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { v4 as uuidv4 } from 'uuid';
+import { ConcurrencyLimiter } from '../../utils/concurrency-limiter.js';
+import { appConfig } from '../../config/index.js';
 import type {
   IStorageProvider,
   ProviderCredentials,
@@ -25,8 +25,6 @@ import type { Account, ProviderType } from '../../types/index.js';
 import logger from '../../utils/logger.js';
 import { EncryptionService } from '../../services/encryption.service.js';
 
-const execAsync = promisify(exec);
-
 export interface RcloneCredentials {
   remoteName: string; // The rclone remote name (e.g., "gdrive1", "koofr1")
   remotePath?: string; // Optional path within the remote (e.g., "StreamFun")
@@ -36,11 +34,93 @@ export class RcloneStorageProvider implements IStorageProvider {
   readonly providerName: string;
   readonly providerType: ProviderType;
   private encryptionService: EncryptionService;
+  
+  // Global limiter to prevent system exhaustion from too many rclone processes
+  private static globalLimiter = new ConcurrencyLimiter(appConfig.upload.maxParallelDownloads * 2);
 
   constructor(providerType: ProviderType) {
     this.providerType = providerType;
     this.providerName = `Rclone ${providerType}`;
     this.encryptionService = new EncryptionService();
+  }
+
+  /**
+   * Helper to run rclone commands via spawn for better process management and cancellation support.
+   */
+  private async runRclone(
+    args: string[], 
+    options: { 
+      timeout?: number; 
+      signal?: AbortSignal;
+      captureOutput?: boolean;
+    } = {}
+  ): Promise<{ stdout: string; stderr: string }> {
+    const { timeout = 300000, signal, captureOutput = true } = options;
+
+    return await RcloneStorageProvider.globalLimiter.run(async () => {
+      if (signal?.aborted) throw new Error('Operation aborted');
+
+      return new Promise((resolve, reject) => {
+        logger.debug({ args: args.join(' ') }, 'Spawning rclone process');
+        
+        const child = spawn('rclone', args, {
+          env: { ...process.env, PAGER: 'cat' }
+        });
+
+        let stdout = '';
+        let stderr = '';
+        let timer: NodeJS.Timeout | null = null;
+
+        if (captureOutput) {
+          child.stdout?.on('data', (data) => { stdout += data.toString(); });
+        }
+        child.stderr?.on('data', (data) => { stderr += data.toString(); });
+
+        const cleanup = () => {
+          if (timer) {
+            clearTimeout(timer);
+            timer = null;
+          }
+          signal?.removeEventListener('abort', onAbort);
+        };
+
+        const onAbort = () => {
+          logger.warn({ args: args.slice(0, 3).join(' ') }, 'Rclone process aborted via signal, killing PID ' + child.pid);
+          child.kill('SIGKILL');
+          cleanup();
+          reject(new Error('Operation aborted'));
+        };
+
+        if (signal) {
+          signal.addEventListener('abort', onAbort);
+        }
+
+        timer = setTimeout(() => {
+          logger.error({ args: args.slice(0, 3).join(' '), timeout }, 'Rclone process timed out, killing PID ' + child.pid);
+          child.kill('SIGKILL');
+          cleanup();
+          reject(new Error(`Command timed out after ${timeout}ms`));
+        }, timeout);
+
+        child.on('close', (code) => {
+          cleanup();
+          if (code === 0) {
+            resolve({ stdout, stderr });
+          } else {
+            const error = new Error(`Rclone exited with code ${code}`);
+            (error as any).stderr = stderr;
+            (error as any).stdout = stdout;
+            (error as any).code = code;
+            reject(error);
+          }
+        });
+
+        child.on('error', (err) => {
+          cleanup();
+          reject(err);
+        });
+      });
+    });
   }
 
   async authenticate(credentials: ProviderCredentials): Promise<AuthResult> {
@@ -50,14 +130,11 @@ export class RcloneStorageProvider implements IStorageProvider {
       const remotePath = rcloneConfig.remotePath || '';
 
       // Test if remote exists and is accessible
-      // For Blomp, we need to include the bucket name in the path
       const testPath = remotePath
         ? `${remoteName}:${remotePath}`
         : `${remoteName}:`;
 
-      const { stdout } = await execAsync(`rclone lsd ${testPath}`, {
-        timeout: 10000,
-      });
+      await this.runRclone(['lsd', testPath], { timeout: 15000 });
 
       logger.info({ remoteName, remotePath }, 'Rclone remote authenticated successfully');
 
@@ -94,16 +171,14 @@ export class RcloneStorageProvider implements IStorageProvider {
   async validateToken(account: Account): Promise<boolean> {
     try {
       const remoteName = await this.getRemoteName(account);
-      await execAsync(`rclone lsd ${remoteName}: --max-depth 1`, {
-        timeout: 5000,
-      });
+      await this.runRclone(['lsd', `${remoteName}:`, '--max-depth', '1'], { timeout: 5000 });
       return true;
     } catch {
       return false;
     }
   }
 
-  async uploadFile(account: Account, file: FileUpload): Promise<UploadResult> {
+  async uploadFile(account: Account, file: FileUpload, signal?: AbortSignal): Promise<UploadResult> {
     const remoteName = await this.getRemoteName(account);
     const remotePath = await this.getRemotePath(account);
     const tempFilePath = join(tmpdir(), `upload-${uuidv4()}`);
@@ -114,12 +189,14 @@ export class RcloneStorageProvider implements IStorageProvider {
       const reader = file.stream.getReader();
 
       while (true) {
+        if (signal?.aborted) throw new Error('Upload aborted');
         const { done, value } = await reader.read();
         if (done) break;
         writeStream.write(Buffer.from(value));
       }
 
       await new Promise((resolve, reject) => {
+        if (signal?.aborted) return reject(new Error('Upload aborted'));
         writeStream.end((err: any) => (err ? reject(err) : resolve(null)));
       });
 
@@ -128,19 +205,13 @@ export class RcloneStorageProvider implements IStorageProvider {
         ? `${remoteName}:${remotePath}/${file.filename}`
         : `${remoteName}:${file.filename}`;
 
-      // Extract directory path
-      const remoteDir = remoteFilePath.includes('/')
-        ? remoteFilePath.substring(0, remoteFilePath.lastIndexOf('/'))
-        : remoteFilePath.substring(0, remoteFilePath.lastIndexOf(':') + 1);
-
-      logger.debug({ tempFilePath, remoteFilePath, remoteDir }, 'Uploading via rclone copyto');
+      logger.debug({ tempFilePath, remoteFilePath }, 'Uploading via rclone copyto');
 
       // Upload file directly to the final path
-      // This is more atomic than copy + moveto
-      await execAsync(`rclone copyto "${tempFilePath}" "${remoteFilePath}" --progress`, {
-        timeout: 600000, // 10 minutes for large files
-        maxBuffer: 10 * 1024 * 1024, // 10MB buffer for logs
-      });
+      await this.runRclone(
+        ['copyto', tempFilePath, remoteFilePath, '--progress'],
+        { timeout: 600000, signal }
+      );
 
       // Get the uploaded file ID
       const providerFileId = file.filename;
@@ -154,6 +225,10 @@ export class RcloneStorageProvider implements IStorageProvider {
         uploadedAt: new Date(),
       };
     } catch (error: any) {
+      if (error.message === 'Upload aborted' || error.message === 'Operation aborted') {
+        logger.info({ filename: file.filename }, 'Upload aborted by user');
+        throw error;
+      }
       logger.error({ error: error.message, filename: file.filename }, 'Rclone upload failed');
       throw new Error(`Upload failed: ${error.message}`);
     } finally {
@@ -164,7 +239,7 @@ export class RcloneStorageProvider implements IStorageProvider {
     }
   }
 
-  async downloadFile(account: Account, fileId: string): Promise<ReadableStream> {
+  async downloadFile(account: Account, fileId: string, signal?: AbortSignal): Promise<ReadableStream> {
     const remoteName = await this.getRemoteName(account);
     const remotePath = await this.getRemotePath(account);
 
@@ -172,11 +247,6 @@ export class RcloneStorageProvider implements IStorageProvider {
       ? `${remoteName}:${remotePath}/${fileId}`
       : `${remoteName}:${fileId}`;
 
-    // We use `rclone copyto remote:path /tmp/file` instead of `rclone cat`.
-    // On Swift/Blomp, `rclone cat` can silently return 0 bytes for object paths
-    // containing subdirectories (e.g. videos/Name/chunk_0), treating them as
-    // virtual directories. `copyto` always performs proper object addressing
-    // and is the same command used for upload — it is 100% reliable.
     const tempFilePath = join(tmpdir(), `download-${uuidv4()}`);
     const maxAttempts = 3;
 
@@ -184,45 +254,53 @@ export class RcloneStorageProvider implements IStorageProvider {
 
     let lastError: Error | null = null;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        const { stderr } = await execAsync(`rclone copyto "${remoteFilePath}" "${tempFilePath}"`, {
-          timeout: 300000, // 5 min for large chunks
-        });
+      if (signal?.aborted) {
+        throw new Error('Download aborted');
+      }
 
-        if (stderr && (stderr.includes('ERROR') || stderr.includes('error'))) {
-          logger.warn({ remoteFilePath, stderr: stderr.substring(0, 500), attempt }, 'Rclone copyto produced errors');
-        }
+      try {
+        await this.runRclone(
+          ['copyto', remoteFilePath, tempFilePath],
+          { timeout: 300000, signal }
+        );
 
         // Verify file exists and has data
         const fileStat = await stat(tempFilePath);
         if (fileStat.size === 0) {
-          throw new Error(`Downloaded file is 0 bytes on attempt ${attempt}`);
+          throw new Error('Downloaded file is 0 bytes');
         }
 
         logger.debug({ remoteFilePath, size: fileStat.size, attempt }, 'Chunk downloaded to temp file');
         break; // Success
       } catch (err: any) {
         lastError = err;
-        // Distinguish between rclone failure and local file issues
-        const isRcloneError = err.stderr || err.message?.includes('exit code') || err.message?.includes('Command failed');
-        const errorDetail = isRcloneError
-          ? `rclone failed (file may not exist on cloud or account quota exceeded): ${(err.stderr || err.message || '').substring(0, 300)}`
-          : err.message;
-        logger.warn({ attempt, maxAttempts, fileId, error: errorDetail, remoteFilePath }, 'Rclone copyto download attempt failed');
-        // Clean up failed temp file
+        
+        // Clean up partial temp file
         try { await unlink(tempFilePath); } catch { }
+
+        if (err.message === 'Download aborted' || err.message === 'Operation aborted') {
+          throw err;
+        }
+
+        const isRcloneError = err.stderr || err.message?.includes('exit code');
+        const errorDetail = isRcloneError
+          ? `rclone failed: ${(err.stderr || err.message || '').substring(0, 300)}`
+          : err.message;
+          
+        logger.warn({ attempt, maxAttempts, fileId, error: errorDetail, remoteFilePath }, 'Rclone copyto download attempt failed');
+        
         if (attempt < maxAttempts) {
-          await new Promise(r => setTimeout(r, attempt * 2000)); // 2s, 4s backoff
+          await new Promise(r => setTimeout(r, attempt * 2000));
         }
       }
     }
 
     if (lastError) {
-      const isRcloneError = (lastError as any).stderr || lastError.message?.includes('exit code') || lastError.message?.includes('Command failed');
-      const errorMsg = isRcloneError
-        ? `File may not exist on cloud or cloud account is full. Remote path: ${remoteFilePath}. Error: ${((lastError as any).stderr || lastError.message || '').substring(0, 300)}`
-        : `Failed to download chunk after ${maxAttempts} attempts: ${lastError.message}`;
-      throw new Error(errorMsg);
+      // Re-verify if rclone returned 0 but file is missing (ENOENT was likely swallowed by stat)
+      if (lastError.message?.includes('ENOENT') || lastError.message?.includes('statx')) {
+         throw new Error(`Critical download failure: Rclone reported success but temporary file missed at ${tempFilePath}. Check if cloud path exists: ${remoteFilePath}`);
+      }
+      throw lastError;
     }
 
     // Stream the temp file and delete it after consumption
@@ -276,9 +354,7 @@ export class RcloneStorageProvider implements IStorageProvider {
         ? `${remoteName}:${remotePath}/${fileId}`
         : `${remoteName}:${fileId}`;
 
-      await execAsync(`rclone delete "${remoteFilePath}"`, {
-        timeout: 30000,
-      });
+      await this.runRclone(['delete', remoteFilePath], { timeout: 30000 });
 
       logger.info({ fileId, remoteName }, 'File deleted via rclone');
 
@@ -301,9 +377,10 @@ export class RcloneStorageProvider implements IStorageProvider {
         ? `${remoteName}:${remotePath}`
         : `${remoteName}:`;
 
-      const { stdout } = await execAsync(`rclone lsjson "${remoteFullPath}" --max-depth 1`, {
-        timeout: 30000,
-      });
+      const { stdout } = await this.runRclone(
+        ['lsjson', remoteFullPath, '--max-depth', '1'],
+        { timeout: 30000 }
+      );
 
       const files = JSON.parse(stdout) as Array<{
         Path: string;
@@ -345,11 +422,10 @@ export class RcloneStorageProvider implements IStorageProvider {
 
     try {
       // --stat treats the path as a FILE and returns its metadata directly.
-      // Without --stat, lsjson treats the path as a DIRECTORY and lists contents,
-      // which returns [] for files (causing false "File not found" errors).
-      const { stdout } = await execAsync(`rclone lsjson "${remoteFilePath}" --stat`, {
-        timeout: 30000, // 30s for slow providers like Blomp
-      });
+      const { stdout } = await this.runRclone(
+        ['lsjson', remoteFilePath, '--stat'],
+        { timeout: 30000 }
+      );
 
       // --stat returns a single JSON object, not an array
       const file = JSON.parse(stdout) as {
@@ -392,9 +468,7 @@ export class RcloneStorageProvider implements IStorageProvider {
         ? `${remoteName}:${remotePath}/${fileId}`
         : `${remoteName}:${fileId}`;
 
-      const { stdout } = await execAsync(`rclone link "${remoteFilePath}"`, {
-        timeout: 10000,
-      });
+      const { stdout } = await this.runRclone(['link', remoteFilePath], { timeout: 10000 });
 
       return {
         url: stdout.trim(),
@@ -425,13 +499,7 @@ export class RcloneStorageProvider implements IStorageProvider {
     try {
       logger.debug({ remoteName, target }, 'Fetching quota info via rclone about');
 
-      const { stdout, stderr } = await execAsync(`rclone about "${target}" --json`, {
-        timeout: 20000,
-      });
-
-      if (stderr && stderr.includes('NOTICE')) {
-        logger.debug({ stderr }, 'Rclone about notice');
-      }
+      const { stdout } = await this.runRclone(['about', target, '--json'], { timeout: 20000 });
 
       const aboutInfo = JSON.parse(stdout);
 
@@ -450,13 +518,9 @@ export class RcloneStorageProvider implements IStorageProvider {
       logger.debug({ remoteName, error: aboutError.message }, 'rclone about failed, trying rclone size fallback');
     }
 
-    // Strategy 2: Try `rclone size` to at least get used space.
-    // Providers like Filen/Koofr/WebDAV don't support `about` but can list their files.
-    // This lets us compute used space even without a quota endpoint.
+    // Strategy 2: Try `rclone size`
     try {
-      const { stdout } = await execAsync(`rclone size "${target}" --json`, {
-        timeout: 60000, // Can be slow for large remotes
-      });
+      const { stdout } = await this.runRclone(['size', target, '--json'], { timeout: 60000 });
 
       const sizeInfo = JSON.parse(stdout);
       const usedBytes = typeof sizeInfo.bytes === 'number' ? sizeInfo.bytes : 0;
@@ -482,9 +546,7 @@ export class RcloneStorageProvider implements IStorageProvider {
     const startTime = Date.now();
 
     try {
-      await execAsync(`rclone lsd ${remoteName}: --max-depth 1`, {
-        timeout: 5000,
-      });
+      await this.runRclone(['lsd', `${remoteName}:`, '--max-depth', '1'], { timeout: 5000 });
 
       const latency = Date.now() - startTime;
 

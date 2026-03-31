@@ -563,21 +563,25 @@ export function createFileRoutes(fileService: FileService, streamService: Stream
         logger.info({ fileId: id, size: file.size }, 'Handling full file request');
       }
 
-      // Initialize download
-      const { stream } = await fileService.downloadFile(id, start, end);
+      // Initialize download with the request's abort signal (Express 5+) or a manual one
+      const abortController = new AbortController();
+      const signal = (req as any).signal || abortController.signal;
+      
+      const { stream } = await fileService.downloadFile(id, start, end, signal);
       const reader = stream.getReader();
       let streamActive = true;
-
+ 
       const cleanup = async () => {
         if (!streamActive) return;
         streamActive = false;
+        abortController.abort(); // Signal cancellation to the provider/limiter
         try {
           await reader.cancel();
         } catch (err) {
           // Ignore cancellation errors if stream is already closed
         }
       };
-
+ 
       req.on('close', cleanup);
 
       let firstByteSent = false;

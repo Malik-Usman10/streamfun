@@ -53,13 +53,16 @@ export class MockStorageProvider implements IStorageProvider {
     return true;
   }
 
-  async uploadFile(account: Account, file: FileUpload): Promise<UploadResult> {
+  async uploadFile(account: Account, file: FileUpload, signal?: AbortSignal): Promise<UploadResult> {
     const fileId = uuidv4();
     const chunks: Buffer[] = [];
     
     // Read stream into buffer
     const reader = file.stream.getReader();
     while (true) {
+      if (signal?.aborted) {
+        throw new Error('Upload aborted');
+      }
       const { done, value } = await reader.read();
       if (done) break;
       chunks.push(Buffer.from(value));
@@ -90,10 +93,14 @@ export class MockStorageProvider implements IStorageProvider {
     };
   }
 
-  async downloadFile(account: Account, fileId: string): Promise<ReadableStream> {
+  async downloadFile(account: Account, fileId: string, signal?: AbortSignal): Promise<ReadableStream> {
     const file = this.files.get(fileId);
     if (!file) {
       throw new Error(`File not found: ${fileId}`);
+    }
+    
+    if (signal?.aborted) {
+       throw new Error('Download aborted');
     }
     
     return new ReadableStream({

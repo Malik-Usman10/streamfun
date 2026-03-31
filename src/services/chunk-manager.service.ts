@@ -167,7 +167,7 @@ export class ChunkManager {
       mimeType: 'application/octet-stream',
       size: encryptedChunk.length,
       stream: chunkStream,
-    });
+    }, undefined); // Note: internal background upload currently doesn't use a signal
 
     logger.info({ fileId, chunkIndex }, 'Chunk uploaded successfully');
 
@@ -251,7 +251,7 @@ export class ChunkManager {
       const getEncryptedStream = async () => {
         return await this.downloadLimiter.run(async () => {
           if (signal.aborted) throw new Error('Stream aborted');
-          return await provider.downloadFile(account, chunk.providerFileId);
+          return await provider.downloadFile(account, chunk.providerFileId, signal);
         });
       };
 
@@ -663,7 +663,7 @@ export class ChunkManager {
           mimeType: 'application/octet-stream',
           size: dataToUpload.length,
           stream: chunkStream,
-        });
+        }, undefined); // Internal parallel upload doesn't use signal yet
         
         // Break out of retry loop on success
         break;

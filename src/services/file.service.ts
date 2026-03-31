@@ -34,7 +34,8 @@ export class FileService {
   async uploadFile(
     providerType: ProviderType,
     file: FileUpload,
-    encrypt: boolean = true
+    encrypt: boolean = true,
+    signal?: AbortSignal
   ): Promise<FileRecord> {
     logger.info({ filename: file.filename, size: file.size, providerType }, 'Starting file upload');
     
@@ -61,7 +62,7 @@ export class FileService {
     const result = await this.uploadWithRetry(provider, account, {
       ...file,
       stream: uploadStream,
-    });
+    }, 3, signal);
     
     // Store metadata
     const fileRecord = await this.fileRepository.create({
@@ -91,7 +92,8 @@ export class FileService {
     providerType: ProviderType,
     url: string,
     filename: string,
-    encrypt: boolean = false
+    encrypt: boolean = false,
+    signal?: AbortSignal
   ): Promise<FileRecord> {
     logger.info({ url, filename, providerType }, 'Starting URL upload');
     
@@ -112,14 +114,14 @@ export class FileService {
     if (!encrypt && provider.uploadFromUrl) {
       logger.info({ url, providerName: provider.providerName }, 'Delegating URL upload directly to provider (bypassing stream constraints)');
       
-      const result = await provider.uploadFromUrl(account, url, filename);
+      const result = await provider.uploadFromUrl(account, url, filename, signal);
       providerFileId = result.providerFileId;
       
       // If we need the real size, we might have to fetch it explicitly here, 
       // but for bypassing, we skip downloading the size.
     } else {
       logger.info({ url, encrypt }, 'Downloading URL to server stream before upload');
-      const response = await fetch(url);
+      const response = await fetch(url, { signal } as RequestInit);
       
       if (!response.ok || !response.body) {
          throw new Error(`Failed to fetch URL: ${response.status} ${response.statusText}`);
@@ -145,7 +147,7 @@ export class FileService {
         stream: uploadStream
       };
 
-      const result = await this.uploadWithRetry(provider, account, file);
+      const result = await this.uploadWithRetry(provider, account, file, 3, signal);
       providerFileId = result.providerFileId;
     }
 
@@ -177,13 +179,15 @@ export class FileService {
     provider: any,
     account: any,
     file: FileUpload,
-    maxRetries: number = 3
+    maxRetries: number = 3,
+    signal?: AbortSignal
   ): Promise<any> {
     let lastError: Error | undefined;
     
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      if (signal?.aborted) throw new Error('Upload aborted');
       try {
-        return await provider.uploadFile(account, file);
+        return await provider.uploadFile(account, file, signal);
       } catch (error) {
         lastError = error as Error;
         logger.warn({ attempt, error }, 'Upload attempt failed');
@@ -200,7 +204,8 @@ export class FileService {
   async downloadFile(
     fileId: string,
     rangeStart?: number,
-    rangeEnd?: number
+    rangeEnd?: number,
+    signal?: AbortSignal
   ): Promise<{ stream: ReadableStream; file: FileRecord }> {
     const file = await this.fileRepository.findById(fileId);
     
@@ -229,7 +234,7 @@ export class FileService {
     
     await this.tokenManager.refreshIfNeeded(account, provider);
     
-    let stream = await provider.downloadFile(account, file.providerFileId);
+    let stream = await provider.downloadFile(account, file.providerFileId, signal);
     
     // Decrypt if encrypted
     if (file.encryptionKey && file.encryptionIv) {
