@@ -98,8 +98,12 @@ export class ThumbnailService {
    */
   async getVideoDuration(videoPath: string): Promise<number> {
     try {
+      const networkFlags = videoPath.startsWith('http') 
+        ? '-reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 2' 
+        : '';
+
       const { stdout } = await execAsync(
-        `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoPath}"`
+        `ffprobe ${networkFlags} -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoPath}"`
       );
       return parseFloat(stdout.trim());
     } catch (error: any) {
