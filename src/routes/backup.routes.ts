@@ -1,9 +1,32 @@
 import { Router } from 'express';
+import multer from 'multer';
+import { unlink } from 'fs/promises';
 import { BackupQueue } from '../services/backup.queue.js';
+import { BackupService } from '../services/backup.service.js';
 import { SettingsRepository } from '../repositories/settings.repository.js';
+
+// Configure multer for file uploads
+const upload = multer({
+  dest: '/tmp/',
+  limits: {
+    fileSize: 1024 * 1024 * 1024, // 1GB max
+  },
+  fileFilter: (req, file, cb) => {
+    // Accept .sql, .sql.gz, .dump, and .backup files
+    if (file.originalname.endsWith('.sql') || 
+        file.originalname.endsWith('.sql.gz') || 
+        file.originalname.endsWith('.dump') ||
+        file.originalname.endsWith('.backup')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only .sql, .sql.gz, .dump, or .backup files are allowed'));
+    }
+  },
+});
 
 export function createBackupRoutes(
   backupQueue: BackupQueue,
+  backupService: BackupService,
   settingsRepo: SettingsRepository
 ) {
   const router = Router();
@@ -77,6 +100,45 @@ export function createBackupRoutes(
       res.json({ success: true, message: 'Database backup job enqueued successfully' });
     } catch (error) {
       next(error);
+    }
+  });
+
+  /**
+   * POST /api/backup/restore
+   * Restore database from an uploaded dump file
+   */
+  router.post('/restore', upload.single('dumpFile'), async (req, res, next) => {
+    let uploadedFilePath: string | undefined;
+
+    try {
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          message: 'No dump file provided. Please upload a .sql or .sql.gz file.'
+        });
+      }
+
+      uploadedFilePath = req.file.path;
+      const originalFilename = req.file.originalname;
+
+      // Perform the restore with original filename for format detection
+      await backupService.restoreDatabase(uploadedFilePath, originalFilename);
+
+      res.json({
+        success: true,
+        message: 'Database restored successfully from dump file'
+      });
+    } catch (error: any) {
+      next(error);
+    } finally {
+      // Cleanup uploaded file
+      if (uploadedFilePath) {
+        try {
+          await unlink(uploadedFilePath);
+        } catch (cleanupErr) {
+          // Ignore cleanup errors
+        }
+      }
     }
   });
 

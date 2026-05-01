@@ -14,3 +14,6 @@ coverage/
 temp/
 uploads/
 .kiro/
+backup/
+rclone-config/
+*.md

@@ -412,6 +412,56 @@ const api = {
     return await apiCallWithRetry(`${API_BASE}/backup/trigger`, {
       method: 'POST'
     });
+  },
+
+  /**
+   * Restore database from dump file
+   * @param {File} dumpFile - Database dump file (.sql or .sql.gz)
+   * @param {Function} onProgress - Progress callback (optional)
+   * @returns {Promise<Object>} Restore result
+   */
+  async restoreDatabase(dumpFile, onProgress = null) {
+    const formData = new FormData();
+    formData.append('dumpFile', dumpFile);
+
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+
+      // Track upload progress
+      if (onProgress) {
+        xhr.upload.addEventListener('progress', (e) => {
+          if (e.lengthComputable) {
+            const percentComplete = Math.round((e.loaded / e.total) * 100);
+            onProgress(percentComplete);
+          }
+        });
+      }
+
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const response = JSON.parse(xhr.responseText);
+            resolve(response);
+          } catch (e) {
+            resolve({ success: true });
+          }
+        } else {
+          try {
+            const error = JSON.parse(xhr.responseText);
+            reject(new APIError(xhr.status, error.error || error.message || 'Restore failed'));
+          } catch (e) {
+            reject(new APIError(xhr.status, 'Restore failed'));
+          }
+        }
+      });
+
+      xhr.addEventListener('error', () => {
+        reject(new NetworkError('Network error during restore'));
+      });
+
+      xhr.open('POST', `${API_BASE}/backup/restore`);
+      xhr.send(formData);
+    });
   }
 };
 

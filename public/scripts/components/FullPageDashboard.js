@@ -895,6 +895,120 @@ class FullPageDashboard {
       `;
       content.querySelector('.dashboard-section').appendChild(backupSection);
 
+      // Add Restore Section
+      const restoreSection = document.createElement('div');
+      restoreSection.className = 'card';
+      restoreSection.style.marginTop = 'var(--spacing-xl)';
+      restoreSection.innerHTML = `
+        <div class="card-header">
+          <h3>Database Restore</h3>
+        </div>
+        <div class="card-body">
+          <p style="margin-bottom: var(--spacing-lg); color: var(--text-secondary);">
+            Restore your database from a backup dump file (.sql or .sql.gz).
+          </p>
+          
+          <div style="padding: var(--spacing-lg); background: var(--color-warning-bg, rgba(251, 191, 36, 0.1)); border: 1px solid var(--color-warning, #fbbf24); border-radius: 8px; margin-bottom: var(--spacing-lg);">
+            <div style="display: flex; align-items: flex-start; gap: var(--spacing-md);">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width: 24px; height: 24px; color: var(--color-warning, #fbbf24); flex-shrink: 0; margin-top: 2px;">
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                <line x1="12" y1="9" x2="12" y2="13"></line>
+                <line x1="12" y1="17" x2="12.01" y2="17"></line>
+              </svg>
+              <div>
+                <strong style="color: var(--color-warning, #fbbf24); display: block; margin-bottom: 4px;">Warning: This will replace all current data!</strong>
+                <p style="margin: 0; font-size: 0.9rem;">Restoring a database backup will overwrite all existing data. Make sure you have a current backup before proceeding.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="restore-file-input">Select Backup File</label>
+            <div style="display: flex; gap: var(--spacing-md); align-items: center; margin-top: var(--spacing-sm);">
+              <input type="file" id="restore-file-input" accept=".sql,.gz,.dump,.backup" style="flex: 1; padding: var(--spacing-sm); background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 4px;">
+              <button type="button" id="restore-btn" class="btn btn-danger" disabled>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width: 16px; height: 16px; margin-right: 8px;">
+                  <polyline points="23 4 23 10 17 10"></polyline>
+                  <polyline points="1 20 1 14 7 14"></polyline>
+                  <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                </svg>
+                Restore Database
+              </button>
+            </div>
+            <small style="color: var(--text-secondary); font-size: 0.875rem; margin-top: 4px; display: block;">
+              Supported formats: .sql, .sql.gz, .dump, .backup (PostgreSQL custom format)
+            </small>
+          </div>
+
+          <div id="restore-progress" style="display: none; margin-top: var(--spacing-lg);">
+            <div style="width: 100%; height: 8px; background: var(--bg-tertiary); border-radius: 99px; overflow: hidden; margin-bottom: var(--spacing-sm);">
+              <div id="restore-progress-bar" style="height: 100%; width: 0%; background: var(--color-primary); border-radius: 99px; transition: width 0.3s;"></div>
+            </div>
+            <p id="restore-progress-text" style="font-size: 0.875rem; color: var(--text-secondary); margin: 0;">Uploading... 0%</p>
+          </div>
+        </div>
+      `;
+      content.querySelector('.dashboard-section').appendChild(restoreSection);
+
+      // Handle Restore File Selection
+      const restoreFileInput = restoreSection.querySelector('#restore-file-input');
+      const restoreBtn = restoreSection.querySelector('#restore-btn');
+      
+      restoreFileInput.addEventListener('change', () => {
+        restoreBtn.disabled = !restoreFileInput.files || restoreFileInput.files.length === 0;
+      });
+
+      // Handle Restore Button
+      restoreBtn.addEventListener('click', async () => {
+        const file = restoreFileInput.files?.[0];
+        if (!file) {
+          showError('Please select a backup file');
+          return;
+        }
+
+        const confirmed = confirm(
+          '⚠️ WARNING: This will REPLACE ALL current data with the backup!\n\n' +
+          'Are you absolutely sure you want to restore from this backup?\n\n' +
+          'This action cannot be undone.'
+        );
+
+        if (!confirmed) return;
+
+        const restoreProgress = restoreSection.querySelector('#restore-progress');
+        const restoreProgressBar = restoreSection.querySelector('#restore-progress-bar');
+        const restoreProgressText = restoreSection.querySelector('#restore-progress-text');
+
+        try {
+          restoreBtn.disabled = true;
+          restoreFileInput.disabled = true;
+          restoreProgress.style.display = 'block';
+
+          await api.restoreDatabase(file, (progress) => {
+            restoreProgressBar.style.width = `${progress}%`;
+            restoreProgressText.textContent = `Uploading... ${progress}%`;
+          });
+
+          restoreProgressText.textContent = 'Restoring database... This may take a few minutes.';
+          restoreProgressBar.style.width = '100%';
+
+          // Wait a bit for the restore to complete
+          await new Promise(resolve => setTimeout(resolve, 2000));
+
+          showSuccess('Database restored successfully! The page will reload in 3 seconds.');
+          
+          setTimeout(() => {
+            window.location.reload();
+          }, 3000);
+
+        } catch (err) {
+          console.error('Restore error:', err);
+          showError(err.message || 'Failed to restore database');
+          restoreBtn.disabled = false;
+          restoreFileInput.disabled = false;
+          restoreProgress.style.display = 'none';
+        }
+      });
+
       // Handle Backup Config Form
       backupSection.querySelector('#backup-config-form').addEventListener('submit', async (e) => {
         e.preventDefault();

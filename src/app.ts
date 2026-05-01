@@ -156,7 +156,7 @@ export function createApp() {
   app.use('/api/dashboard', requireAuth, createDashboardRoutes(accountService));
   app.use('/api/rclone', requireAuth, createRcloneRoutes(accountService));
   app.use('/api/scan-jobs', requireAuth, createScanJobRoutes(scanJobRepo, chunkRepository, directoryScanner, autoUploadQueue));
-  app.use('/api/backup', requireAuth, createBackupRoutes(backupQueue, settingsRepository));
+  app.use('/api/backup', requireAuth, createBackupRoutes(backupQueue, backupService, settingsRepository));
 
   // Error handler (must be last)
   app.use(errorHandler);
