@@ -1,44 +1,44 @@
 // Application setup and dependency injection
 import express from 'express';
-import { errorHandler } from './middleware/error-handler.js';
-import { createAccountRoutes } from './routes/account.routes.js';
-import { createFileRoutes } from './routes/file.routes.js';
-import { createChunkedUploadRoutes } from './routes/chunked-upload.routes.js';
-import { createDashboardRoutes } from './routes/dashboard.routes.js';
-import { createRcloneRoutes } from './routes/rclone.routes.js';
-import { createScanJobRoutes } from './routes/scan-jobs.routes.js';
-import { createAuthRoutes } from './routes/auth.routes.js';
-import { createBackupRoutes } from './routes/backup.routes.js';
-import { requireAuth } from './middleware/auth.middleware.js';
+import { errorHandler } from './shared/middleware/error-handler.js';
+import { createAccountRoutes } from './features/accounts/routes/account.routes.js';
+import { createFileRoutes } from './features/files/routes/file.routes.js';
+import { createChunkedUploadRoutes } from './features/files/routes/chunked-upload.routes.js';
+import { createDashboardRoutes } from './features/dashboard/routes/dashboard.routes.js';
+import { createRcloneRoutes } from './features/storage/routes/rclone.routes.js';
+import { createScanJobRoutes } from './features/upload/routes/scan-jobs.routes.js';
+import { createAuthRoutes } from './features/auth/routes/auth.routes.js';
+import { createBackupRoutes } from './features/backup/routes/backup.routes.js';
+import { requireAuth } from './features/auth/middleware/auth.middleware.js';
 import cookieParser from 'cookie-parser';
 
 // Repositories
-import { AccountRepository } from './repositories/account.repository.js';
-import { FileRepository } from './repositories/file.repository.js';
-import { ChunkRepository } from './repositories/chunk.repository.js';
-import { ScanJobRepository } from './repositories/scan-job.repository.js';
-import { SettingsRepository } from './repositories/settings.repository.js';
+import { AccountRepository } from './features/accounts/repositories/account.repository.js';
+import { FileRepository } from './features/files/repositories/file.repository.js';
+import { ChunkRepository } from './features/files/repositories/chunk.repository.js';
+import { ScanJobRepository } from './features/upload/repositories/scan-job.repository.js';
+import { SettingsRepository } from './features/backup/repositories/settings.repository.js';
 
 // Services
-import { EncryptionService } from './services/encryption.service.js';
-import { FileEncryptionService } from './services/file-encryption.service.js';
-import { TokenManager } from './services/token-manager.service.js';
-import { BandwidthTracker } from './services/bandwidth-tracker.service.js';
-import { AccountRotator } from './services/account-rotator.service.js';
-import { AccountSelector } from './services/account-selector.service.js';
-import { CacheService } from './services/cache.service.js';
-import { AccountService } from './services/account.service.js';
-import { FileService } from './services/file.service.js';
-import { ChunkManager } from './services/chunk-manager.service.js';
-import { StreamService } from './services/stream.service.js';
-import { AutoUploadQueue } from './services/auto-upload.queue.js';
-import { DirectoryScanner } from './services/directory-scanner.service.js';
-import { BackupService } from './services/backup.service.js';
-import { BackupQueue } from './services/backup.queue.js';
-import { IntegrityService } from './services/integrity.service.js';
+import { EncryptionService } from './shared/services/encryption.service.js';
+import { FileEncryptionService } from './shared/services/file-encryption.service.js';
+import { TokenManager } from './features/accounts/services/token-manager.service.js';
+import { BandwidthTracker } from './features/accounts/services/bandwidth-tracker.service.js';
+import { AccountRotator } from './features/accounts/services/account-rotator.service.js';
+import { AccountSelector } from './features/accounts/services/account-selector.service.js';
+import { CacheService } from './shared/services/cache.service.js';
+import { AccountService } from './features/accounts/services/account.service.js';
+import { FileService } from './features/files/services/file.service.js';
+import { ChunkManager } from './features/files/services/chunk-manager.service.js';
+import { StreamService } from './features/files/services/stream.service.js';
+import { AutoUploadQueue } from './features/upload/services/auto-upload.queue.js';
+import { DirectoryScanner } from './features/upload/services/directory-scanner.service.js';
+import { BackupService } from './features/backup/services/backup.service.js';
+import { BackupQueue } from './features/backup/services/backup.queue.js';
+import { IntegrityService } from './features/upload/services/integrity.service.js';
 
 // Providers
-import { ProviderFactory } from './providers/provider.factory.js';
+import { ProviderFactory } from './features/storage/providers/provider.factory.js';
 
 export interface AppContext {
   scanner: DirectoryScanner;

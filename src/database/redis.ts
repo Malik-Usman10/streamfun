@@ -1,7 +1,7 @@
 // Redis connection
 import { Redis } from 'ioredis';
 import { appConfig } from '../config/index.js';
-import logger from '../utils/logger.js';
+import logger from '../shared/utils/logger.js';
 
 export const redis = new Redis({
   host: appConfig.redis.host,

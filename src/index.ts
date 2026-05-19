@@ -1,10 +1,10 @@
 // Main application entry point
 import { appConfig } from './config/index.js';
-import logger from './utils/logger.js';
+import logger from './shared/utils/logger.js';
 import { testConnection, closeConnection } from './database/connection.js';
 import { testRedisConnection, closeRedisConnection } from './database/redis.js';
 import { createApp, getAppContext } from './app.js';
-import { RcloneConfigService } from './services/rclone-config.service.js';
+import { RcloneConfigService } from './features/storage/services/rclone-config.service.js';
 
 const app = createApp();
 

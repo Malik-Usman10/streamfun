@@ -1,8 +1,12 @@
 // Database migration runner
 import { readdir, readFile, writeFile } from 'fs/promises';
-import { join } from 'path';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { pool } from './connection.js';
-import logger from '../utils/logger.js';
+import logger from '../shared/utils/logger.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 interface Migration {
   id: number;
@@ -29,7 +33,7 @@ async function getExecutedMigrations(): Promise<string[]> {
 }
 
 async function loadMigrations(): Promise<Migration[]> {
-  const migrationsDir = join(process.cwd(), 'migrations');
+  const migrationsDir = join(__dirname, 'migrations');
   const files = await readdir(migrationsDir);
   
   const migrations: Migration[] = [];
@@ -107,7 +111,8 @@ async function migrateDown(): Promise<void> {
 async function createMigration(name: string): Promise<void> {
   const timestamp = Date.now();
   const filename = `${timestamp}_${name}.sql`;
-  const filepath = join(process.cwd(), 'migrations', filename);
+  const migrationsDir = join(__dirname, 'migrations');
+  const filepath = join(migrationsDir, filename);
   
   await writeFile(filepath, '-- Add your migration SQL here\n');
   logger.info(`Created migration: ${filename}`);

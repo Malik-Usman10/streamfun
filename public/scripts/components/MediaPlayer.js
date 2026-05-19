@@ -293,6 +293,7 @@ class MediaPlayer {
     const controlsBar = document.getElementById('controls-bar');
 
     let controlsTimeout;
+    let isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
     // Format time helper
     const formatTime = (seconds) => {
@@ -310,9 +311,41 @@ class MediaPlayer {
       }
     };
 
+    // Mobile: Single tap on video shows/hides controls WITHOUT pausing
+    // Desktop: Click on video toggles play/pause
+    if (isMobile) {
+      let tapTimeout;
+      let lastTap = 0;
+      
+      video.addEventListener('touchend', (e) => {
+        const currentTime = new Date().getTime();
+        const tapLength = currentTime - lastTap;
+        
+        // Double tap to toggle play/pause
+        if (tapLength < 300 && tapLength > 0) {
+          e.preventDefault();
+          clearTimeout(tapTimeout);
+          togglePlay();
+          lastTap = 0;
+        } else {
+          // Single tap to show/hide controls
+          tapTimeout = setTimeout(() => {
+            e.preventDefault();
+            if (controlsBar.classList.contains('visible')) {
+              hideControls();
+            } else {
+              showControls();
+            }
+          }, 300);
+          lastTap = currentTime;
+        }
+      });
+    } else {
+      video.addEventListener('click', togglePlay);
+    }
+
     playBtnLarge.addEventListener('click', togglePlay);
     playPauseBtn.addEventListener('click', togglePlay);
-    video.addEventListener('click', togglePlay);
 
     video.addEventListener('play', () => {
       playOverlay.style.display = 'none';
@@ -439,26 +472,28 @@ class MediaPlayer {
       }
     });
 
-    // Progress bar seeking
-    const seek = (e) => {
+    // Progress bar seeking - Support both mouse and touch
+    const seek = (clientX) => {
       const rect = progressBar.getBoundingClientRect();
-      const percent = (e.clientX - rect.left) / rect.width;
+      const percent = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
       video.currentTime = percent * video.duration;
     };
 
     let isSeeking = false;
+    
+    // Mouse events
     progressContainer.addEventListener('mousedown', (e) => {
       isSeeking = true;
-      seek(e);
+      seek(e.clientX);
     });
 
     document.addEventListener('mousemove', (e) => {
       if (isSeeking) {
-        seek(e);
+        seek(e.clientX);
       }
 
-      // Show tooltip on hover
-      if (e.target.closest('#progress-container')) {
+      // Show tooltip on hover (desktop only)
+      if (!isMobile && e.target.closest('#progress-container')) {
         const rect = progressBar.getBoundingClientRect();
         const percent = (e.clientX - rect.left) / rect.width;
         const time = percent * video.duration;
@@ -471,6 +506,26 @@ class MediaPlayer {
     });
 
     document.addEventListener('mouseup', () => {
+      isSeeking = false;
+    });
+
+    // Touch events for mobile
+    progressContainer.addEventListener('touchstart', (e) => {
+      isSeeking = true;
+      const touch = e.touches[0];
+      seek(touch.clientX);
+      e.preventDefault();
+    });
+
+    progressContainer.addEventListener('touchmove', (e) => {
+      if (isSeeking) {
+        const touch = e.touches[0];
+        seek(touch.clientX);
+        e.preventDefault();
+      }
+    });
+
+    progressContainer.addEventListener('touchend', () => {
       isSeeking = false;
     });
 
@@ -497,39 +552,39 @@ class MediaPlayer {
 
       if (!video.paused) {
         controlsTimeout = setTimeout(() => {
-          controlsBar.classList.remove('visible');
-          if (this.elements.mediaHeader) {
-            this.elements.mediaHeader.classList.remove('visible');
-          }
+          hideControls();
         }, 3000);
       }
     };
 
-    this.elements.contentContainer.addEventListener('mousemove', showControls);
-    this.elements.contentContainer.addEventListener('mouseenter', showControls);
+    const hideControls = () => {
+      controlsBar.classList.remove('visible');
+      if (this.elements.mediaHeader) {
+        this.elements.mediaHeader.classList.remove('visible');
+      }
+    };
+
+    // Desktop: mouse movement shows controls
+    if (!isMobile) {
+      this.elements.contentContainer.addEventListener('mousemove', showControls);
+      this.elements.contentContainer.addEventListener('mouseenter', showControls);
+    }
+
+    // Mobile: touch shows controls (handled in video touch event above)
 
     video.addEventListener('play', () => {
       controlsTimeout = setTimeout(() => {
-        controlsBar.classList.remove('visible');
-        if (this.elements.mediaHeader) {
-          this.elements.mediaHeader.classList.remove('visible');
-        }
+        hideControls();
       }, 3000);
     });
 
     video.addEventListener('pause', () => {
       clearTimeout(controlsTimeout);
-      controlsBar.classList.add('visible');
-      if (this.elements.mediaHeader) {
-        this.elements.mediaHeader.classList.add('visible');
-      }
+      showControls();
     });
 
     // Show controls initially
-    controlsBar.classList.add('visible');
-    if (this.elements.mediaHeader) {
-      this.elements.mediaHeader.classList.add('visible');
-    }
+    showControls();
 
     // Error handling
     video.addEventListener('error', (e) => {
@@ -775,6 +830,8 @@ class MediaPlayer {
    * Close media player modal
    */
   close() {
+    if (this.isClosing) return; // Prevent double-close
+    
     this.isClosing = true;
     this.container.classList.add('closing');
 
@@ -783,6 +840,10 @@ class MediaPlayer {
     if (video) {
       video.pause();
       video.src = '';
+      // Remove all source elements
+      while (video.firstChild) {
+        video.removeChild(video.firstChild);
+      }
     }
 
     // Remove focus trap
@@ -803,6 +864,7 @@ class MediaPlayer {
       }
 
       this.currentFile = null;
+      this.isClosing = false;
     }, 200);
   }
 
