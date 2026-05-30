@@ -499,6 +499,9 @@ class Gallery {
     const fileList = appState.getFilteredFiles();
     const index = fileList.findIndex(f => f.id === file.id);
 
+    // Save current file to state
+    appState.setCurrentFile(file);
+
     // Dispatch custom event for media player with file list
     window.dispatchEvent(new CustomEvent('media:play', {
       detail: {

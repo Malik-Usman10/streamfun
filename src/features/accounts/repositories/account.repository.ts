@@ -1,7 +1,6 @@
 // Account repository for managing storage provider accounts
 import { pool } from '../../../database/connection.js';
-import type { Account, ProviderType, AccountStatus } from '../../shared/types/index.js';
-import logger from '../../shared/utils/logger.js';
+import type { Account, ProviderType, AccountStatus } from '../../../shared/types/index.js';
 
 export class AccountRepository {
   async create(data: {

@@ -8,6 +8,7 @@ class AppState {
     this.state = {
       currentCategory: 'videos', // 'videos' | 'images'
       categoryFilter: null,      // Current category filter (e.g., 'Wallpapers')
+      currentFile: null,         // Currently playing/viewing file
       theme: 'light',            // 'light' | 'dark'
       files: [],                 // Array of file objects
       accounts: [],              // Array of account objects
@@ -277,6 +278,21 @@ class AppState {
    */
   setStats(stats) {
     this.setState({ stats: stats || {} });
+  }
+
+  /**
+   * Set currently playing/viewing file
+   * @param {Object|null} file - File object or null to clear
+   */
+  setCurrentFile(file) {
+    this.setState({ currentFile: file });
+  }
+
+  /**
+   * Clear currently playing/viewing file
+   */
+  clearCurrentFile() {
+    this.setState({ currentFile: null });
   }
 }
 

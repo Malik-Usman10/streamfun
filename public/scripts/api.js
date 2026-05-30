@@ -181,6 +181,15 @@ const api = {
   },
 
   /**
+   * Fetch a single file by ID
+   * @param {string} fileId - File ID
+   * @returns {Promise<Object>} File object
+   */
+  async fetchFile(fileId) {
+    return await apiCallWithRetry(`${API_BASE}/files/${fileId}`);
+  },
+
+  /**
    * Regenerate thumbnail for a file
    * @param {string} fileId - File ID
    * @returns {Promise<Object>} Result with new thumbnail data

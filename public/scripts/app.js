@@ -98,19 +98,31 @@ router.register('search', (params) => {
   return gallery;
 });
 
-router.register('videos', () => {
+router.register('videos', async (params) => {
   const categoryView = new CategoryView(appRoot, 'videos');
   categoryView.render();
+  
+  // If fileId parameter exists, restore media player state
+  if (params.fileId) {
+    await restoreMediaPlayerState(params.fileId);
+  }
+  
   return categoryView;
 });
 
-router.register('images', (params) => {
+router.register('images', async (params) => {
   const categoryView = new CategoryView(appRoot, 'images');
   categoryView.render();
   // If a specific category was requested (e.g. from home screen collection card), open it
   if (params && params.openCategory) {
     categoryView.openCategory(params.openCategory);
   }
+  
+  // If fileId parameter exists, restore media player state
+  if (params.fileId) {
+    await restoreMediaPlayerState(params.fileId);
+  }
+  
   return categoryView;
 });
 
@@ -196,6 +208,42 @@ async function loadSearchFiles(query) {
     console.error('Search failed:', error);
     appState.setState({ isLoading: false });
     showError('Search failed. Please try again.');
+  }
+}
+
+// Restore media player state from fileId
+async function restoreMediaPlayerState(fileId) {
+  try {
+    // Fetch file details using API client
+    const fileData = await api.fetchFile(fileId);
+    const file = fileData.file;
+    
+    if (!file) {
+      console.error('File not found for restoration');
+      return;
+    }
+    
+    // Get current files from state
+    const state = appState.getState();
+    const fileList = state.files.length > 0 ? state.files : [file];
+    const index = fileList.findIndex(f => f.id === file.id);
+    
+    // Set current file in state
+    appState.setCurrentFile(file);
+    
+    // Dispatch media play event to open the player
+    // Use setTimeout to ensure the DOM is ready
+    setTimeout(() => {
+      window.dispatchEvent(new CustomEvent('media:play', {
+        detail: {
+          file,
+          fileList,
+          index: index >= 0 ? index : 0
+        }
+      }));
+    }, 100);
+  } catch (error) {
+    console.error('Failed to restore media player state:', error);
   }
 }
 

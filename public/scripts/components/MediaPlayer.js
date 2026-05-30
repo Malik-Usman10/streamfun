@@ -820,6 +820,16 @@ class MediaPlayer {
     // Set up focus trap
     this.focusTrap = trapFocus(this.container);
 
+    // Update URL with fileId parameter
+    if (this.currentFile) {
+      // Import router dynamically to avoid circular dependencies
+      import('../router.js').then(({ default: router }) => {
+        const currentRoute = router.getCurrentRoute();
+        const currentParams = router.getCurrentParams();
+        router.navigate(currentRoute, { ...currentParams, fileId: this.currentFile.id }, true);
+      });
+    }
+
     // Remove opening class after animation
     setTimeout(() => {
       this.container.classList.remove('opening');
@@ -851,6 +861,19 @@ class MediaPlayer {
       this.focusTrap();
       this.focusTrap = null;
     }
+
+    // Clear fileId from URL
+    import('../router.js').then(({ default: router }) => {
+      const currentRoute = router.getCurrentRoute();
+      const currentParams = router.getCurrentParams();
+      const { fileId, ...paramsWithoutFileId } = currentParams;
+      router.navigate(currentRoute, paramsWithoutFileId, true);
+    });
+
+    // Clear current file from state
+    import('../state.js').then(({ default: appState }) => {
+      appState.clearCurrentFile();
+    });
 
     setTimeout(() => {
       this.container.classList.remove('active');
