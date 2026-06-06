@@ -19,12 +19,12 @@ export class BackupService {
    */
   async createLocalBackup(): Promise<{ filePath: string; filename: string }> {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const filename = `streamfun-db-backup-${timestamp}.sql.gz`;
+    const filename = `streamfun-db-backup-${timestamp}.dump`; // Use .dump format instead of .sql.gz
     const localPath = join('/tmp', filename);
 
     try {
-      logger.info({ localPath }, 'Creating local database backup');
-      await this.dumpDatabase(localPath);
+      logger.info({ localPath }, 'Creating local database backup in custom format');
+      await this.dumpDatabaseCustomFormat(localPath);
       logger.info({ filename }, 'Local database backup created successfully');
       
       return { filePath: localPath, filename };
@@ -64,7 +64,7 @@ export class BackupService {
     }
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const filename = `streamfun-db-backup-${timestamp}.sql.gz`;
+    const filename = `streamfun-db-backup-${timestamp}.dump`; // Use .dump format
     const localPath = join('/tmp', filename);
 
     // Construct the full rclone remote path
@@ -76,8 +76,8 @@ export class BackupService {
       await this.settingsRepo.set('backup_status', 'running');
       logger.info({ remoteName, remoteTarget, localPath }, 'Starting database backup workflow');
 
-      // 1. Dump database and compress
-      await this.dumpDatabase(localPath);
+      // 1. Dump database in custom format
+      await this.dumpDatabaseCustomFormat(localPath);
 
       // 2. Upload to cloud
       await this.uploadToCloud(localPath, remoteTarget);
@@ -103,21 +103,25 @@ export class BackupService {
     }
   }
 
-  private async dumpDatabase(outputPath: string): Promise<void> {
+  /**
+   * Dump database in PostgreSQL custom format
+   * This format preserves proper table ordering and handles foreign keys correctly
+   */
+  private async dumpDatabaseCustomFormat(outputPath: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      logger.info('Starting database dump');
+      logger.info('Starting database dump in custom format');
       
-      // Try standard pg_dump first (best for container-to-container or local)
-      // If DATABASE_HOST is localhost and fails, we might be in a weird hybrid state
       const env = {
         ...process.env,
         PGPASSWORD: appConfig.database.password,
       };
 
-      // Construct pg_dump command and pipe to gzip
-      // Using --column-inserts to preserve UUIDs and make backups portable
-      // --no-owner --no-privileges for security, but --column-inserts ensures UUIDs are explicitly inserted
-      const command = `pg_dump -h ${appConfig.database.host} -p ${appConfig.database.port} -U ${appConfig.database.user} -d ${appConfig.database.name} --column-inserts --no-owner --no-privileges | gzip > ${outputPath}`;
+      // Use pg_dump in custom format (-Fc)
+      // -Fc: Custom format (best for pg_restore)
+      // --no-owner: Skip ownership restoration
+      // --no-privileges: Skip access privileges
+      // Custom format maintains proper order and handles dependencies automatically
+      const command = `pg_dump -h ${appConfig.database.host} -p ${appConfig.database.port} -U ${appConfig.database.user} -d ${appConfig.database.name} -Fc --no-owner --no-privileges -f ${outputPath}`;
       
       logger.debug({ command: command.replace(appConfig.database.password, '********') }, 'Executing backup command');
       
@@ -142,14 +146,12 @@ export class BackupService {
           logger.info('Database dump completed successfully');
           resolve();
         } else {
-          // If pg_dump failed and we are in a dev environment with docker, maybe try docker exec as fallback?
-          // No, better to log why it failed. Most likely 'pg_dump: command not found'
           logger.error({ code, errorOutput }, 'Database dump failed');
           
           if (errorOutput.includes('not found') || errorOutput.includes('No such file')) {
             logger.info('pg_dump not found on host, trying docker exec fallback...');
             try {
-              await this.dumpViaDocker(outputPath);
+              await this.dumpViaDockerCustomFormat(outputPath);
               resolve();
             } catch (dockerErr: any) {
               reject(new Error(`Both pg_dump and docker exec failed. pg_dump error: ${errorOutput.trim()}. Docker error: ${dockerErr.message}`));
@@ -168,10 +170,10 @@ export class BackupService {
     });
   }
 
-  private async dumpViaDocker(outputPath: string): Promise<void> {
+  private async dumpViaDockerCustomFormat(outputPath: string): Promise<void> {
     return new Promise((resolve, reject) => {
       const containerName = 'streamfun-postgres';
-      const command = `docker exec -e PGPASSWORD=${appConfig.database.password} ${containerName} pg_dump -U ${appConfig.database.user} -d ${appConfig.database.name} --column-inserts --no-owner --no-privileges | gzip > ${outputPath}`;
+      const command = `docker exec -e PGPASSWORD=${appConfig.database.password} ${containerName} pg_dump -U ${appConfig.database.user} -d ${appConfig.database.name} -Fc --no-owner --no-privileges > ${outputPath}`;
       
       logger.info({ containerName }, 'Executing dump via docker exec');
       const dockerProc = spawn('sh', ['-c', command]);
