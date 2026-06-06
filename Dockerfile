@@ -26,7 +26,7 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/public ./public
-COPY --from=builder /app/migrations ./migrations
+COPY --from=builder /app/src/database/migrations ./migrations
 COPY --from=builder /app/src/database/migrate.ts ./src/database/migrate.ts
 COPY --from=builder /app/src ./src
 COPY package.json ./
