@@ -402,6 +402,63 @@ export function createFileRoutes(fileService: FileService, streamService: Stream
     }
   });
 
+  // Delete entire category and all its files
+  // Body: { categoryName: string, type: 'image' | 'video' }
+  router.delete('/delete-category', async (req, res, next) => {
+    try {
+      const { categoryName, type } = req.body;
+
+      if (!categoryName || !type) {
+        return res.status(400).json({ error: 'categoryName and type are required' });
+      }
+
+      const { pool } = await import('../../../database/connection.js');
+      const mimeTypePrefix = type === 'image' ? 'image/%' : 'video/%';
+
+      // First, get all file IDs in this category
+      let selectQuery;
+      const selectParams = [mimeTypePrefix];
+      
+      if (categoryName === 'Uncategorized') {
+        selectQuery = `SELECT id FROM files WHERE collection_name IS NULL AND mime_type LIKE $1`;
+      } else {
+        selectParams.push(categoryName);
+        selectQuery = `SELECT id FROM files WHERE collection_name = $2 AND mime_type LIKE $1`;
+      }
+
+      const filesResult = await pool.query(selectQuery, selectParams);
+      const fileIds = filesResult.rows.map((row: any) => row.id);
+
+      if (fileIds.length === 0) {
+        return res.json({
+          success: true,
+          message: `No files found in category "${categoryName}"`,
+          deletedCount: 0
+        });
+      }
+
+      // Delete all files in the category using the fileService
+      let deletedCount = 0;
+      for (const fileId of fileIds) {
+        try {
+          await fileService.deleteFile(fileId);
+          deletedCount++;
+        } catch (error) {
+          logger.error({ fileId, error }, 'Failed to delete file from category');
+          // Continue deleting other files even if one fails
+        }
+      }
+
+      res.json({
+        success: true,
+        message: `Deleted ${deletedCount} files from category "${categoryName}"`,
+        deletedCount
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   // Rename a file (video title) or image collection
   // Body: { filename?: string, collectionName?: string }
   router.patch('/:id/rename', async (req, res, next) => {

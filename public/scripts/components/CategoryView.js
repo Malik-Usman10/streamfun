@@ -306,22 +306,35 @@ class CategoryView {
       <div class="category-info">
         <div class="category-name-row">
           <h3 class="category-name">${category.name}</h3>
-          <button class="category-rename-btn" title="Rename" aria-label="Rename ${category.name}">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-            </svg>
-          </button>
+          <div class="category-actions">
+            <button class="category-rename-btn" title="Rename" aria-label="Rename ${category.name}">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+              </svg>
+            </button>
+            <button class="category-delete-btn" title="Delete" aria-label="Delete ${category.name}">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="3 6 5 6 21 6"></polyline>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+              </svg>
+            </button>
+          </div>
         </div>
         <p class="category-count">${category.count} ${category.count === 1 ? 'file' : 'files'}</p>
       </div>
     `;
 
-    // Add click handler for category (exclude rename button)
+    // Add click handler for category (exclude action buttons)
     item.addEventListener('click', (e) => {
       if (e.target.closest('.category-rename-btn')) {
         e.stopPropagation();
         this.handleRenameCategory(category.name);
+        return;
+      }
+      if (e.target.closest('.category-delete-btn')) {
+        e.stopPropagation();
+        this.handleDeleteCategory(category.name, category.count);
         return;
       }
       this.openCategory(category.name);
@@ -507,6 +520,47 @@ class CategoryView {
       await this.loadCategories(); // Refresh list
     } catch (error) {
       console.error('Rename category error:', error);
+      showError(error.message);
+    }
+  }
+
+  /**
+   * Handle deleting a category (and all its files)
+   */
+  async handleDeleteCategory(categoryName, fileCount) {
+    const confirmMessage = `Are you sure you want to delete the category "${categoryName}"?\n\nThis will permanently delete all ${fileCount} file${fileCount === 1 ? '' : 's'} in this category.\n\nThis action cannot be undone!`;
+    
+    if (!confirm(confirmMessage)) {
+      return;
+    }
+
+    // Second confirmation for safety
+    const doubleConfirm = prompt(`Type "${categoryName}" to confirm deletion:`);
+    if (doubleConfirm !== categoryName) {
+      showError('Category name did not match. Deletion cancelled.');
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/files/delete-category`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          categoryName,
+          type: this.fileType === 'images' ? 'image' : 'video' 
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to delete category');
+      }
+
+      const result = await response.json();
+      showSuccess(`Category "${categoryName}" and ${result.deletedCount || fileCount} file(s) deleted successfully`);
+      await this.loadCategories(); // Refresh list
+    } catch (error) {
+      console.error('Delete category error:', error);
       showError(error.message);
     }
   }

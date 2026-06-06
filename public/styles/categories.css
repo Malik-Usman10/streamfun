@@ -119,12 +119,61 @@
   padding: 1.5rem;
 }
 
+.category-name-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
 .category-name {
   font-size: 1.25rem;
   font-weight: 600;
   color: var(--text-primary);
-  margin: 0 0 0.5rem 0;
+  margin: 0;
   line-height: 1.3;
+  flex: 1;
+}
+
+.category-actions {
+  display: flex;
+  gap: 0.5rem;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.category-item:hover .category-actions {
+  opacity: 1;
+}
+
+.category-rename-btn,
+.category-delete-btn {
+  background: transparent;
+  border: none;
+  padding: 0.5rem;
+  cursor: pointer;
+  border-radius: var(--radius-md);
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+}
+
+.category-rename-btn svg,
+.category-delete-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.category-rename-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--color-primary);
+}
+
+.category-delete-btn:hover {
+  background: rgba(244, 67, 54, 0.1);
+  color: var(--color-danger, #f44336);
 }
 
 .category-count {
