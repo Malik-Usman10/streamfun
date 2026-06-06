@@ -236,7 +236,7 @@ export class BackupService {
    * @param originalFilename - Original filename to detect format
    */
   async restoreDatabase(dumpFilePath: string, originalFilename?: string): Promise<void> {
-    return new Promise((resolve, reject) => {
+    return new Promise(async (resolve, reject) => {
       logger.info({ dumpFilePath, originalFilename }, 'Starting database restore');
 
       const env = {
@@ -248,6 +248,16 @@ export class BackupService {
       const filename = originalFilename || dumpFilePath;
       const isGzipped = filename.endsWith('.gz');
       const isCustomFormat = filename.endsWith('.dump') || filename.endsWith('.backup');
+
+      try {
+        // Step 1: Clear existing data before restore to prevent conflicts
+        logger.info('Clearing existing data before restore...');
+        await this.clearDatabaseTables();
+        logger.info('Existing data cleared successfully');
+      } catch (clearError: any) {
+        logger.error({ error: clearError.message }, 'Failed to clear existing data');
+        return reject(new Error(`Failed to clear existing data: ${clearError.message}`));
+      }
 
       let command: string;
 
@@ -320,8 +330,54 @@ export class BackupService {
     });
   }
 
+  /**
+   * Clear all data from database tables before restore
+   * This prevents duplicate key conflicts and ensures clean restore
+   */
+  private async clearDatabaseTables(): Promise<void> {
+    const { pool } = await import('../../../database/connection.js');
+    
+    // Order matters - delete child tables first due to foreign keys
+    const tables = [
+      'bandwidth_usage',
+      'file_chunks', 
+      'files',
+      'audit_logs',
+      'api_keys',
+      'account_quotas',
+      'accounts',
+      'scan_jobs',
+      'settings',
+      'schema_migrations'
+    ];
+
+    logger.info({ tables }, 'Truncating tables for clean restore');
+    
+    for (const table of tables) {
+      try {
+        // Use TRUNCATE with CASCADE to handle foreign keys
+        await pool.query(`TRUNCATE TABLE ${table} RESTART IDENTITY CASCADE`);
+        logger.debug({ table }, 'Table truncated');
+      } catch (error: any) {
+        // If table doesn't exist or error, log and continue
+        logger.warn({ table, error: error.message }, 'Failed to truncate table');
+      }
+    }
+    
+    logger.info('All tables cleared successfully');
+  }
+
   private async restoreViaDocker(dumpFilePath: string, isGzipped: boolean, isCustomFormat: boolean): Promise<void> {
-    return new Promise((resolve, reject) => {
+    return new Promise(async (resolve, reject) => {
+      // First, clear existing data
+      try {
+        logger.info('Clearing existing data before Docker restore...');
+        await this.clearDatabaseTables();
+      } catch (clearError: any) {
+        logger.error({ error: clearError.message }, 'Failed to clear existing data in Docker restore');
+        return reject(clearError);
+      }
+
       const containerName = 'streamfun-postgres';
       
       // Copy file into container first

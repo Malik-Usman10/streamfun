@@ -381,17 +381,25 @@ export class RcloneIntegrationService {
   /**
    * Synchronize rclone remotes to database accounts
    * Any remote in rclone config that is NOT in the database will be added automatically
+   * If remote exists in DB (after restore), it will UPDATE the existing account to preserve UUIDs
    */
   async syncRemotesToAccounts(): Promise<number> {
     try {
       const remotes = await this.rcloneConfigService.listRemotes();
       const accounts = await this.accountService.listAccounts();
       
-      const existingIdentifiers = new Set(accounts.map(a => a.accountIdentifier));
+      // Build maps for quick lookup
+      const existingByIdentifier = new Map(
+        accounts.map(a => [a.accountIdentifier, a])
+      );
+      
       let syncCount = 0;
 
       for (const remote of remotes) {
-        if (!existingIdentifiers.has(remote.name)) {
+        const existingAccount = existingByIdentifier.get(remote.name);
+        
+        if (!existingAccount) {
+          // Remote doesn't exist in database - create new account
           logger.info({ remoteName: remote.name, type: remote.type }, 'Found rclone remote missing from database, synchronizing...');
           
           try {
@@ -424,6 +432,43 @@ export class RcloneIntegrationService {
             logger.info({ remoteName: remote.name }, 'Successfully synchronized remote to database');
           } catch (syncError: any) {
             logger.error({ remoteName: remote.name, error: syncError.message }, 'Failed to synchronize specific remote');
+          }
+        } else {
+          // Remote exists in database (likely after restore) - update credentials to keep in sync
+          // This preserves the existing UUID while updating credentials from rclone.conf
+          logger.debug({ remoteName: remote.name, accountId: existingAccount.id }, 'Remote already exists in database, updating credentials from rclone.conf');
+          
+          try {
+            // Determine provider type
+            let providerType = remote.type;
+            if (remote.type === 'swift') {
+              if (remote.config.auth?.includes('blomp') || remote.config.user?.includes('@')) {
+                providerType = 'blomp';
+              }
+            }
+
+            // Extract remotePath
+            let remotePath = remote.config.remotePath;
+            if (!remotePath && providerType === 'blomp' && remote.config.user) {
+              remotePath = remote.config.user;
+            }
+
+            const credentials = {
+              type: 'session' as const,
+              data: {
+                remoteName: remote.name,
+                ...(remotePath && { remotePath }),
+                ...remote.config
+              }
+            };
+
+            // Update existing account with new credentials from rclone.conf
+            // This preserves the UUID from the restored database
+            await this.accountService.updateAccount(existingAccount.id, credentials);
+            syncCount++;
+            logger.info({ remoteName: remote.name, accountId: existingAccount.id }, 'Successfully updated existing account from rclone.conf (preserving UUID)');
+          } catch (updateError: any) {
+            logger.error({ remoteName: remote.name, error: updateError.message }, 'Failed to update existing account from rclone.conf');
           }
         }
       }
