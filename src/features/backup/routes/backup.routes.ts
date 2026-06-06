@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { unlink } from 'fs/promises';
+import { createReadStream } from 'fs';
 import { BackupQueue } from '../services/backup.queue.js';
 import { BackupService } from '../services/backup.service.js';
 import { SettingsRepository } from '../../../repositories/settings.repository.js';
@@ -104,6 +105,54 @@ export function createBackupRoutes(
   });
 
   /**
+   * GET /api/backup/download
+   * Create a database backup and download it locally
+   */
+  router.get('/download', async (req, res, next) => {
+    let filePath: string | undefined;
+
+    try {
+      // Create the backup
+      const { filePath: backupPath, filename } = await backupService.createLocalBackup();
+      filePath = backupPath;
+
+      // Set headers for file download
+      res.setHeader('Content-Type', 'application/gzip');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+      // Stream the file to the response
+      const fileStream = createReadStream(filePath);
+      
+      fileStream.on('error', (error) => {
+        next(error);
+      });
+
+      fileStream.on('end', async () => {
+        // Cleanup the temporary file after streaming
+        if (filePath) {
+          try {
+            await unlink(filePath);
+          } catch (cleanupErr) {
+            // Ignore cleanup errors
+          }
+        }
+      });
+
+      fileStream.pipe(res);
+    } catch (error: any) {
+      // Cleanup on error
+      if (filePath) {
+        try {
+          await unlink(filePath);
+        } catch (cleanupErr) {
+          // Ignore cleanup errors
+        }
+      }
+      next(error);
+    }
+  });
+
+  /**
    * POST /api/backup/restore
    * Restore database from an uploaded dump file
    */
@@ -126,7 +175,7 @@ export function createBackupRoutes(
 
       res.json({
         success: true,
-        message: 'Database restored successfully from dump file'
+        message: 'Database restored successfully from dump file. All remote storage accounts and file references have been preserved.'
       });
     } catch (error: any) {
       next(error);

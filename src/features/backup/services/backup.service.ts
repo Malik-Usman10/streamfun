@@ -14,6 +14,27 @@ export class BackupService {
   ) {}
 
   /**
+   * Create a local database backup and return the file path
+   * This allows users to download backups to their local machine
+   */
+  async createLocalBackup(): Promise<{ filePath: string; filename: string }> {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filename = `streamfun-db-backup-${timestamp}.sql.gz`;
+    const localPath = join('/tmp', filename);
+
+    try {
+      logger.info({ localPath }, 'Creating local database backup');
+      await this.dumpDatabase(localPath);
+      logger.info({ filename }, 'Local database backup created successfully');
+      
+      return { filePath: localPath, filename };
+    } catch (error: any) {
+      logger.error({ error: error.message }, 'Failed to create local backup');
+      throw error;
+    }
+  }
+
+  /**
    * Perform a manual or scheduled backup to the configured cloud storage
    */
   async performBackup(): Promise<void> {
@@ -94,8 +115,9 @@ export class BackupService {
       };
 
       // Construct pg_dump command and pipe to gzip
-      // Using --no-owner --no-privileges to make backups more portable
-      const command = `pg_dump -h ${appConfig.database.host} -p ${appConfig.database.port} -U ${appConfig.database.user} -d ${appConfig.database.name} --no-owner --no-privileges | gzip > ${outputPath}`;
+      // Using --column-inserts to preserve UUIDs and make backups portable
+      // --no-owner --no-privileges for security, but --column-inserts ensures UUIDs are explicitly inserted
+      const command = `pg_dump -h ${appConfig.database.host} -p ${appConfig.database.port} -U ${appConfig.database.user} -d ${appConfig.database.name} --column-inserts --no-owner --no-privileges | gzip > ${outputPath}`;
       
       logger.debug({ command: command.replace(appConfig.database.password, '********') }, 'Executing backup command');
       
@@ -149,7 +171,7 @@ export class BackupService {
   private async dumpViaDocker(outputPath: string): Promise<void> {
     return new Promise((resolve, reject) => {
       const containerName = 'streamfun-postgres';
-      const command = `docker exec -e PGPASSWORD=${appConfig.database.password} ${containerName} pg_dump -U ${appConfig.database.user} -d ${appConfig.database.name} --no-owner --no-privileges | gzip > ${outputPath}`;
+      const command = `docker exec -e PGPASSWORD=${appConfig.database.password} ${containerName} pg_dump -U ${appConfig.database.user} -d ${appConfig.database.name} --column-inserts --no-owner --no-privileges | gzip > ${outputPath}`;
       
       logger.info({ containerName }, 'Executing dump via docker exec');
       const dockerProc = spawn('sh', ['-c', command]);

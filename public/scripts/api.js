@@ -424,6 +424,23 @@ const api = {
   },
 
   /**
+   * Download database backup to local machine
+   * @returns {Promise<Response>} Response object with backup file
+   */
+  async downloadBackup() {
+    const response = await fetch(`${API_BASE}/backup/download`, {
+      method: 'GET'
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(errorText || `Download failed with status ${response.status}`);
+    }
+
+    return response;
+  },
+
+  /**
    * Restore database from dump file
    * @param {File} dumpFile - Database dump file (.sql or .sql.gz)
    * @param {Function} onProgress - Progress callback (optional)

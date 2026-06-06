@@ -875,7 +875,8 @@ class FullPageDashboard {
 
             <div style="display: flex; gap: var(--spacing-md); margin-top: var(--spacing-md);">
               <button type="submit" class="btn btn-primary">Save Backup Settings</button>
-              <button type="button" id="backup-now-btn" class="btn btn-secondary">Backup Now</button>
+              <button type="button" id="backup-now-btn" class="btn btn-secondary">Backup Now (Cloud)</button>
+              <button type="button" id="backup-download-btn" class="btn btn-secondary">Download Backup</button>
             </div>
           </form>
 
@@ -905,7 +906,7 @@ class FullPageDashboard {
         </div>
         <div class="card-body">
           <p style="margin-bottom: var(--spacing-lg); color: var(--text-secondary);">
-            Restore your database from a backup dump file (.sql or .sql.gz).
+            Restore your database from a backup dump file (.sql or .sql.gz). Remote storage account configurations and all file references will be preserved.
           </p>
           
           <div style="padding: var(--spacing-lg); background: var(--color-warning-bg, rgba(251, 191, 36, 0.1)); border: 1px solid var(--color-warning, #fbbf24); border-radius: 8px; margin-bottom: var(--spacing-lg);">
@@ -1032,6 +1033,46 @@ class FullPageDashboard {
           backupSection.querySelector('#backup-status-text').style.color = 'var(--text-primary)';
         } catch (err) {
           showError(err.message || 'Failed to trigger backup');
+        }
+      });
+
+      // Handle Backup Download Button
+      backupSection.querySelector('#backup-download-btn').addEventListener('click', async () => {
+        const btn = backupSection.querySelector('#backup-download-btn');
+        const originalText = btn.textContent;
+        
+        try {
+          btn.disabled = true;
+          btn.textContent = 'Creating backup...';
+          
+          const response = await api.downloadBackup();
+          
+          // Get filename from Content-Disposition header or use default
+          const contentDisposition = response.headers.get('Content-Disposition');
+          let filename = 'streamfun-backup.sql.gz';
+          if (contentDisposition) {
+            const matches = /filename="([^"]+)"/.exec(contentDisposition);
+            if (matches) filename = matches[1];
+          }
+          
+          // Download the file
+          const blob = await response.blob();
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.style.display = 'none';
+          a.href = url;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          window.URL.revokeObjectURL(url);
+          document.body.removeChild(a);
+          
+          showSuccess(`Backup downloaded successfully: ${filename}`);
+        } catch (err) {
+          showError(err.message || 'Failed to download backup');
+        } finally {
+          btn.disabled = false;
+          btn.textContent = originalText;
         }
       });
 
