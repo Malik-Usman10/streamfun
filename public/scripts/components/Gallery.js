@@ -323,7 +323,6 @@ class Gallery {
     itemMeta.innerHTML = `
       <span class="item-date">${formatDate(file.uploadedAt)}</span>
       <span class="item-size">${formatBytes(file.size)}</span>
-      ${file.encrypted ? '<span>🔒 Encrypted</span>' : ''}
     `;
 
     itemInfo.appendChild(itemTitle);

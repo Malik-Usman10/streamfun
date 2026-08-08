@@ -12,7 +12,7 @@ export function createFileRoutes(fileService: FileService, streamService: Stream
   router.post('/upload', async (req, res, next) => {
     try {
       // For now, simplified - in production use multer or similar
-      const { filename, mimeType, size, provider, encrypt = true } = req.body;
+      const { filename, mimeType, size, provider } = req.body;
 
       if (!filename || !size || !provider) {
         return res.status(400).json({ error: 'Filename, size, and provider required' });
@@ -28,8 +28,7 @@ export function createFileRoutes(fileService: FileService, streamService: Stream
 
       const file = await fileService.uploadFile(
         provider as ProviderType,
-        { filename, mimeType, size, stream },
-        encrypt
+        { filename, mimeType, size, stream }
       );
 
       res.status(201).json({
@@ -37,7 +36,7 @@ export function createFileRoutes(fileService: FileService, streamService: Stream
         filename: file.filename,
         size: file.size,
         provider: file.providerType,
-        encrypted: !!file.encryptionKey,
+        encrypted: false,
         uploadedAt: file.uploadedAt,
       });
     } catch (error) {
@@ -48,7 +47,7 @@ export function createFileRoutes(fileService: FileService, streamService: Stream
   // Upload file from URL
   router.post('/url-upload', async (req, res, next) => {
     try {
-      const { url, filename, provider, encrypt = false } = req.body;
+      const { url, filename, provider } = req.body;
 
       if (!url || !filename || !provider) {
         return res.status(400).json({ error: 'URL, filename, and provider required' });
@@ -57,8 +56,7 @@ export function createFileRoutes(fileService: FileService, streamService: Stream
       const file = await fileService.uploadFromUrl(
         provider as ProviderType,
         url,
-        filename,
-        encrypt
+        filename
       );
 
       res.status(201).json({
@@ -66,7 +64,7 @@ export function createFileRoutes(fileService: FileService, streamService: Stream
         filename: file.filename,
         size: file.size,
         provider: file.providerType,
-        encrypted: !!file.encryptionKey,
+        encrypted: false,
         uploadedAt: file.uploadedAt,
       });
     } catch (error) {
@@ -119,7 +117,7 @@ export function createFileRoutes(fileService: FileService, streamService: Stream
           size: f.size,
           mimeType: f.mimeType,
           provider: f.providerType,
-          encrypted: !!f.encryptionKey,
+          encrypted: false,
           chunked: f.isChunked,
           thumbnail: f.thumbnailData,
           uploadedAt: f.uploadedAt,
@@ -218,7 +216,7 @@ export function createFileRoutes(fileService: FileService, streamService: Stream
             provider: f.providerType,
             category: f.category,
             collectionName: f.collectionName,
-            encrypted: !!f.encryptionKey,
+            encrypted: false,
             uploadedAt: f.uploadedAt,
             thumbnail: f.thumbnailData || thumbnailUrl,
             streamingUrl,
@@ -321,7 +319,7 @@ export function createFileRoutes(fileService: FileService, streamService: Stream
             provider: f.providerType,
             category: f.category,
             collectionName: f.collectionName,
-            encrypted: !!f.encryptionKey,
+            encrypted: false,
             uploadedAt: f.uploadedAt,
             thumbnail: f.thumbnailData || thumbnailUrl,
             streamingUrl,
@@ -355,7 +353,7 @@ export function createFileRoutes(fileService: FileService, streamService: Stream
         size: file.size,
         mimeType: file.mimeType,
         provider: file.providerType,
-        encrypted: !!file.encryptionKey,
+        encrypted: false,
         chunked: file.isChunked,
         uploadedAt: file.uploadedAt,
         metadata: file.metadata,

@@ -152,29 +152,14 @@ class RemoteEditModal {
 
     let formFields = '';
 
-    // Render provider-specific fields
-    if (type === 'webdav') {
-      const vendor = config.vendor || 'other';
-      const isBlomp = vendor === 'other' && config.url && config.url.includes('blomp.com');
-      
+    if (type === 'swift') {
       formFields = `
         <div class="form-group">
-          <label for="edit-webdav-url">WebDAV URL *</label>
-          <input 
-            type="url" 
-            id="edit-webdav-url" 
-            class="form-input" 
-            value="${config.url || ''}"
-            required
-          >
-        </div>
-
-        <div class="form-group">
-          <label for="edit-webdav-username">Username *</label>
-          <input 
-            type="text" 
-            id="edit-webdav-username" 
-            class="form-input" 
+          <label for="edit-blomp-user">Email / Username *</label>
+          <input
+            type="email"
+            id="edit-blomp-user"
+            class="form-input"
             value="${config.user || ''}"
             required
             autocomplete="username"
@@ -182,62 +167,97 @@ class RemoteEditModal {
         </div>
 
         <div class="form-group">
-          <label for="edit-webdav-password">Password</label>
-          <input 
-            type="password" 
-            id="edit-webdav-password" 
-            class="form-input" 
+          <label for="edit-blomp-key">Password *</label>
+          <input
+            type="password"
+            id="edit-blomp-key"
+            class="form-input"
             placeholder="••••••••"
             autocomplete="current-password"
           >
-          <small class="form-help">Leave blank to keep current password</small>
+          <small class="form-help">Leave blank to keep the current password</small>
         </div>
 
         <div class="form-group">
-          <label for="edit-webdav-path">Remote Path / Bucket ${isBlomp ? '*' : '(Optional)'}</label>
-          <input 
-            type="text" 
-            id="edit-webdav-path" 
-            class="form-input" 
-            placeholder="${isBlomp ? 'e.g., your-email@example.com' : 'e.g., /path/to/folder'}"
-            value="${config.remotePath || ''}"
-            ${isBlomp ? 'required' : ''}
+          <label for="edit-blomp-user-id">Blomp Username (login name) *</label>
+          <input
+            type="text"
+            id="edit-blomp-user-id"
+            class="form-input"
+            value="${config.user_id || ''}"
+            required
           >
-          <small class="form-help">${isBlomp ? 'For Blomp, enter your email address (bucket name)' : 'Optional path or bucket name for the remote'}</small>
+        </div>
+
+        <div class="form-group">
+          <label for="edit-blomp-remote-path">Remote Path / Bucket *</label>
+          <input
+            type="text"
+            id="edit-blomp-remote-path"
+            class="form-input"
+            value="${config.remotePath || ''}"
+            placeholder="e.g., your-email@example.com"
+            required
+          >
         </div>
       `;
-    } else if (type === 'drive' || type === 'dropbox' || type === 'onedrive') {
-      // OAuth providers - show read-only info
+    } else if (type === 'filen') {
       formFields = `
-        <div class="info-box">
-          <svg class="info-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="10"></circle>
-            <line x1="12" y1="16" x2="12" y2="12"></line>
-            <line x1="12" y1="8" x2="12.01" y2="8"></line>
-          </svg>
-          <div>
-            <h4>OAuth Remote</h4>
-            <p>This remote uses OAuth authentication. To update credentials, you need to delete and recreate the remote.</p>
-          </div>
-        </div>
-
         <div class="form-group">
-          <label>Provider Type</label>
-          <input 
-            type="text" 
-            class="form-input" 
-            value="${this.formatProviderName(type)}"
-            disabled
+          <label for="edit-filen-email">Email *</label>
+          <input
+            type="email"
+            id="edit-filen-email"
+            class="form-input"
+            value="${config.email || ''}"
+            required
+            autocomplete="username"
           >
         </div>
 
         <div class="form-group">
-          <label>Remote Name</label>
-          <input 
-            type="text" 
-            class="form-input" 
-            value="${this.remoteName}"
-            disabled
+          <label for="edit-filen-password">Password *</label>
+          <input
+            type="password"
+            id="edit-filen-password"
+            class="form-input"
+            placeholder="••••••••"
+            autocomplete="current-password"
+          >
+        </div>
+
+        <div class="form-group">
+          <label for="edit-filen-api-key">API Key *</label>
+          <input
+            type="password"
+            id="edit-filen-api-key"
+            class="form-input"
+            placeholder="Your Filen API key"
+          >
+        </div>
+      `;
+    } else if (type === 'koofr') {
+      formFields = `
+        <div class="form-group">
+          <label for="edit-koofr-user">Email *</label>
+          <input
+            type="email"
+            id="edit-koofr-user"
+            class="form-input"
+            value="${config.user || ''}"
+            required
+            autocomplete="username"
+          >
+        </div>
+
+        <div class="form-group">
+          <label for="edit-koofr-password">App Password *</label>
+          <input
+            type="password"
+            id="edit-koofr-password"
+            class="form-input"
+            placeholder="••••••••"
+            autocomplete="current-password"
           >
         </div>
       `;
@@ -282,7 +302,7 @@ class RemoteEditModal {
 
     // Enable save button for editable providers
     const saveButton = this.modal.querySelector('#edit-save-btn');
-    if (saveButton && type === 'webdav') {
+    if (saveButton && (type === 'swift' || type === 'filen' || type === 'koofr')) {
       saveButton.disabled = false;
     }
   }
@@ -310,11 +330,9 @@ class RemoteEditModal {
    */
   formatProviderName(type) {
     const names = {
-      'drive': 'Google Drive',
-      'dropbox': 'Dropbox',
-      'onedrive': 'OneDrive',
-      'webdav': 'WebDAV',
-      'koofr': 'Koofr'
+      'swift': 'Blomp',
+      'koofr': 'Koofr',
+      'filen': 'Filen'
     };
     return names[type] || type;
   }
@@ -327,8 +345,7 @@ class RemoteEditModal {
 
     const type = this.remoteData.type;
 
-    // Only WebDAV is editable for now
-    if (type !== 'webdav') {
+    if (type !== 'swift' && type !== 'filen' && type !== 'koofr') {
       showError('This remote type cannot be edited');
       return;
     }
@@ -353,26 +370,30 @@ class RemoteEditModal {
     const errors = [];
     const type = this.remoteData?.type;
 
-    if (type === 'webdav') {
-      const urlInput = document.getElementById('edit-webdav-url');
-      const usernameInput = document.getElementById('edit-webdav-username');
-      const pathInput = document.getElementById('edit-webdav-path');
+    if (type === 'swift') {
+      const userInput = document.getElementById('edit-blomp-user');
+      const keyInput = document.getElementById('edit-blomp-key');
+      const userIdInput = document.getElementById('edit-blomp-user-id');
+      const remotePathInput = document.getElementById('edit-blomp-remote-path');
 
-      if (urlInput && !urlInput.value.trim()) {
-        errors.push('WebDAV URL is required');
-      } else if (urlInput && !/^https?:\/\/.+/.test(urlInput.value.trim())) {
-        errors.push('WebDAV URL must start with http:// or https://');
-      }
+      if (!userInput?.value.trim()) errors.push('Email / Username is required');
+      if (!userIdInput?.value.trim()) errors.push('Blomp username is required');
+      if (!remotePathInput?.value.trim()) errors.push('Remote path / bucket is required');
+      if (keyInput && keyInput.value && keyInput.value.length < 1) errors.push('Password is required');
+    } else if (type === 'filen') {
+      const emailInput = document.getElementById('edit-filen-email');
+      const passwordInput = document.getElementById('edit-filen-password');
+      const apiKeyInput = document.getElementById('edit-filen-api-key');
 
-      if (usernameInput && !usernameInput.value.trim()) {
-        errors.push('Username is required');
-      }
+      if (!emailInput?.value.trim()) errors.push('Email is required');
+      if (!passwordInput?.value.trim()) errors.push('Password is required');
+      if (!apiKeyInput?.value.trim()) errors.push('API key is required');
+    } else if (type === 'koofr') {
+      const userInput = document.getElementById('edit-koofr-user');
+      const passwordInput = document.getElementById('edit-koofr-password');
 
-      // Check if Blomp and validate path
-      const isBlomp = urlInput && urlInput.value.includes('blomp.com');
-      if (isBlomp && pathInput && !pathInput.value.trim()) {
-        errors.push('Remote path (email/bucket) is required for Blomp');
-      }
+      if (!userInput?.value.trim()) errors.push('Email is required');
+      if (!passwordInput?.value.trim()) errors.push('App password is required');
     }
 
     // Show errors if any
@@ -397,31 +418,40 @@ class RemoteEditModal {
     const type = this.remoteData?.type;
     const updates = {};
 
-    if (type === 'webdav') {
-      const urlInput = document.getElementById('edit-webdav-url');
-      const usernameInput = document.getElementById('edit-webdav-username');
-      const passwordInput = document.getElementById('edit-webdav-password');
-      const pathInput = document.getElementById('edit-webdav-path');
+    if (type === 'swift') {
+      const userInput = document.getElementById('edit-blomp-user');
+      const keyInput = document.getElementById('edit-blomp-key');
+      const userIdInput = document.getElementById('edit-blomp-user-id');
+      const remotePathInput = document.getElementById('edit-blomp-remote-path');
 
-      updates.config = {};
+      updates.config = {
+        ...(userInput ? { user: userInput.value.trim() } : {}),
+        ...(userIdInput ? { user_id: userIdInput.value.trim() } : {}),
+        ...(remotePathInput ? { remotePath: remotePathInput.value.trim() } : {}),
+      };
 
-      if (urlInput) {
-        updates.config.url = urlInput.value.trim();
+      if (keyInput && keyInput.value) {
+        updates.config.key = keyInput.value;
       }
+    } else if (type === 'filen') {
+      const emailInput = document.getElementById('edit-filen-email');
+      const passwordInput = document.getElementById('edit-filen-password');
+      const apiKeyInput = document.getElementById('edit-filen-api-key');
 
-      if (usernameInput) {
-        updates.config.user = usernameInput.value.trim();
-      }
+      updates.config = {
+        ...(emailInput ? { email: emailInput.value.trim() } : {}),
+        ...(passwordInput && passwordInput.value ? { password: passwordInput.value } : {}),
+        ...(apiKeyInput && apiKeyInput.value ? { api_key: apiKeyInput.value } : {}),
+      };
+    } else if (type === 'koofr') {
+      const userInput = document.getElementById('edit-koofr-user');
+      const passwordInput = document.getElementById('edit-koofr-password');
 
-      // Only include password if it was changed
-      if (passwordInput && passwordInput.value) {
-        updates.config.pass = passwordInput.value;
-      }
-
-      // Include remotePath
-      if (pathInput) {
-        updates.config.remotePath = pathInput.value.trim();
-      }
+      updates.config = {
+        ...(userInput ? { user: userInput.value.trim() } : {}),
+        ...(passwordInput && passwordInput.value ? { password: passwordInput.value } : {}),
+        provider: 'koofr',
+      };
     }
 
     return updates;

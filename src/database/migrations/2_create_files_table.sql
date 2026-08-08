@@ -8,8 +8,6 @@ CREATE TABLE IF NOT EXISTS files (
   account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
   provider_file_id VARCHAR(500) NOT NULL,
   is_chunked BOOLEAN DEFAULT FALSE,
-  encryption_key TEXT,
-  encryption_iv TEXT,
   metadata JSONB,
   uploaded_at TIMESTAMP NOT NULL DEFAULT NOW(),
   created_at TIMESTAMP NOT NULL DEFAULT NOW(),
@@ -24,4 +22,4 @@ CREATE INDEX IF NOT EXISTS idx_files_mime_type ON files(mime_type);
 CREATE INDEX IF NOT EXISTS idx_files_is_chunked ON files(is_chunked);
 
 -- Add comment
-COMMENT ON TABLE files IS 'File metadata with encryption keys and chunk information';
+COMMENT ON TABLE files IS 'File metadata and chunk information';

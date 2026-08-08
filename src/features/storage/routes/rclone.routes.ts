@@ -2,49 +2,21 @@
 import { Router, Request, Response } from 'express';
 import { RcloneConfigService } from '../services/rclone-config.service.js';
 import { RcloneIntegrationService } from '../services/rclone-integration.service.js';
-import { OAuthService, OAuthConfig } from '../../auth/services/oauth.service.js';
 import { AccountService } from '../../accounts/services/account.service.js';
-import { validateRemoteName, validateWebDAVUrl, validateCredentials } from '../../../shared/utils/rclone-validation.js';
+import { validateRemoteName } from '../../../shared/utils/rclone-validation.js';
 import { maskRemoteConfig } from '../../../shared/utils/credential-masking.js';
 import { ErrorParser } from '../../../shared/utils/error-parser.js';
 import { ProviderType } from '../../../shared/types/index.js';
-import { appConfig } from '../../../config/index.js';
 import logger from '../../../shared/utils/logger.js';
 
 export function createRcloneRoutes(accountService: AccountService): Router {
   const router = Router();
-
-  // Initialize OAuth configs from environment variables
-  const oauthConfigs: Record<string, OAuthConfig> = {
-    'google-drive': {
-      clientId: process.env.GOOGLE_DRIVE_CLIENT_ID || '',
-      clientSecret: process.env.GOOGLE_DRIVE_CLIENT_SECRET || '',
-      redirectUri: '' // Will be set dynamically
-    },
-    'dropbox': {
-      clientId: process.env.DROPBOX_CLIENT_ID || '',
-      clientSecret: process.env.DROPBOX_CLIENT_SECRET || '',
-      redirectUri: '' // Will be set dynamically
-    },
-    'onedrive': {
-      clientId: process.env.ONEDRIVE_CLIENT_ID || '',
-      clientSecret: process.env.ONEDRIVE_CLIENT_SECRET || '',
-      redirectUri: '' // Will be set dynamically
-    }
+  const supportedProviders = ['koofr', 'filen', 'blomp'] as const;
+  const rcloneTypeMap: Record<(typeof supportedProviders)[number], string> = {
+    blomp: 'swift',
+    filen: 'filen',
+    koofr: 'koofr'
   };
-
-  // Determine the base API URL for OAuth redirects
-  // Priority: API_BASE_URL env var > request host
-  const getApiBaseUrl = (req: Request) => {
-    if (process.env.API_BASE_URL && process.env.API_BASE_URL !== 'http://localhost:3000') {
-      return process.env.API_BASE_URL;
-    }
-    const protocol = req.protocol;
-    const host = req.get('host');
-    return `${protocol}://${host}`;
-  };
-
-  // The oauthConfigs will be dynamically updated in the routes
 
   // Initialize services
   const rcloneConfigService = new RcloneConfigService();
@@ -52,7 +24,6 @@ export function createRcloneRoutes(accountService: AccountService): Router {
     rcloneConfigService,
     accountService
   );
-  const oauthService = new OAuthService(rcloneConfigService, oauthConfigs);
 
   /**
    * POST /api/rclone/remotes
@@ -70,6 +41,13 @@ export function createRcloneRoutes(accountService: AccountService): Router {
       });
     }
 
+    if (!supportedProviders.includes(providerType)) {
+      return res.status(400).json({
+        success: false,
+        error: `Unsupported provider type. Supported providers: ${supportedProviders.join(', ')}`
+      });
+    }
+
     // Validate remote name
     const existingRemotes = await rcloneConfigService.listRemotes();
     const existingNames = existingRemotes.map(r => r.name);
@@ -83,35 +61,7 @@ export function createRcloneRoutes(accountService: AccountService): Router {
       });
     }
 
-    // Validate provider-specific configuration
-    if (providerType === 'webdav' && config.url) {
-      const urlValidation = validateWebDAVUrl(config.url);
-      if (!urlValidation.valid) {
-        return res.status(400).json({
-          success: false,
-          error: urlValidation.errors.join(', ')
-        });
-      }
-
-      // Validate credentials for WebDAV
-      if (config.user && config.pass) {
-        const credValidation = validateCredentials(config.user, config.pass);
-        if (!credValidation.valid) {
-          return res.status(400).json({
-            success: false,
-            error: credValidation.errors.join(', ')
-          });
-        }
-      }
-    }
-
-    // Map StreamFun provider type to rclone driver type
-    const rcloneTypeMap: Record<string, string> = {
-      'blomp': 'swift',
-      'filen': 'filen',
-      'koofr': 'koofr'
-    };
-    const finalProviderType = rcloneTypeMap[providerType] || providerType;
+    const finalProviderType = rcloneTypeMap[providerType as (typeof supportedProviders)[number]];
 
     // Extract remotePath from config (used for account credentials, not rclone config)
     const { remotePath, ...rcloneConfig } = config;
@@ -119,8 +69,7 @@ export function createRcloneRoutes(accountService: AccountService): Router {
     // Obscure sensitive fields before creating remote config
     const processedConfig = { ...rcloneConfig };
     
-    // Obscure passwords for different provider types
-    // NOTE: Blomp (Swift) does NOT require password obscuring - it uses plain text
+    // Obscure passwords for the supported provider types
     if (providerType === 'koofr' && rcloneConfig.password) {
       processedConfig.password = await rcloneConfigService.encryptField(rcloneConfig.password);
     } else if (providerType === 'filen') {
@@ -131,10 +80,6 @@ export function createRcloneRoutes(accountService: AccountService): Router {
         processedConfig.api_key = await rcloneConfigService.encryptField(rcloneConfig.api_key);
       }
     }
- else if (providerType === 'webdav' && rcloneConfig.pass) {
-      processedConfig.pass = await rcloneConfigService.encryptField(rcloneConfig.pass);
-    }
-
     // Create remote config object (without remotePath, with obscured passwords)
     const remoteConfig = {
       name: remoteName,
@@ -535,28 +480,6 @@ router.post('/remotes/:remoteName/validate', async (req: Request, res: Response)
       validationErrors.remoteName = nameValidation.errors.join(', ');
     }
 
-    // Validate provider-specific configuration
-    if (providerType === 'webdav') {
-      if (config.url) {
-        const urlValidation = validateWebDAVUrl(config.url);
-        if (!urlValidation.valid) {
-          validationErrors.url = urlValidation.errors.join(', ');
-        }
-      } else {
-        validationErrors.url = 'URL is required for WebDAV';
-      }
-
-      if (config.user && config.pass) {
-        const credValidation = validateCredentials(config.user, config.pass);
-        if (!credValidation.valid) {
-          validationErrors.credentials = credValidation.errors.join(', ');
-        }
-      } else {
-        if (!config.user) validationErrors.user = 'Username is required';
-        if (!config.pass) validationErrors.pass = 'Password is required';
-      }
-    }
-
     // If there are validation errors, return them
     if (Object.keys(validationErrors).length > 0) {
       return res.status(400).json({
@@ -566,13 +489,17 @@ router.post('/remotes/:remoteName/validate', async (req: Request, res: Response)
       });
     }
 
-    // Map StreamFun provider type to rclone driver type for validation
-    const rcloneTypeMap: Record<string, string> = {
-      'blomp': 'swift',
-      'filen': 'filen',
-      'koofr': 'koofr'
-    };
-    const finalProviderType = rcloneTypeMap[providerType] || providerType;
+    if (!supportedProviders.includes(providerType)) {
+      return res.status(400).json({
+        success: false,
+        valid: false,
+        errors: {
+          providerType: `Unsupported provider type. Supported providers: ${supportedProviders.join(', ')}`
+        }
+      });
+    }
+
+    const finalProviderType = rcloneTypeMap[providerType as (typeof supportedProviders)[number]];
 
     // Extract remotePath from config (used for testing, not for rclone config)
     const { remotePath, ...configWithoutPath } = config;
@@ -588,8 +515,7 @@ router.post('/remotes/:remoteName/validate', async (req: Request, res: Response)
     // Obscure sensitive fields before creating remote config
     const processedConfig = { ...configWithoutPath };
     
-    // Obscure passwords for different provider types
-    // NOTE: Blomp (Swift) does NOT require password obscuring - it uses plain text
+    // Obscure passwords for the supported provider types
     if (providerType === 'koofr' && configWithoutPath.password) {
       processedConfig.password = await rcloneConfigService.encryptField(configWithoutPath.password);
     } else if (providerType === 'filen') {
@@ -600,10 +526,6 @@ router.post('/remotes/:remoteName/validate', async (req: Request, res: Response)
         processedConfig.api_key = await rcloneConfigService.encryptField(configWithoutPath.api_key);
       }
     }
- else if (providerType === 'webdav' && configWithoutPath.pass) {
-      processedConfig.pass = await rcloneConfigService.encryptField(configWithoutPath.pass);
-    }
-
     // Create a temporary remote config for testing (without remotePath)
     const tempRemoteName = `temp_validate_${Date.now()}`;
     const tempRemoteConfig = {
@@ -686,234 +608,6 @@ router.post('/remotes/:remoteName/validate', async (req: Request, res: Response)
       error: 'Failed to validate remote',
       details: error.message
     });
-  }
-});
-
-/**
- * GET /api/rclone/oauth/authorize/:provider
- * Generate OAuth authorization URL for a provider
- */
-router.get('/oauth/authorize/:provider', async (req: Request, res: Response) => {
-  try {
-    const provider = String(req.params.provider).toLowerCase();
-    const { remoteName } = req.query;
-
-    if (!remoteName || typeof remoteName !== 'string') {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing required query parameter: remoteName'
-      });
-    }
-
-    // Validate provider
-    const validProviders = ['google-drive', 'dropbox', 'onedrive'];
-    if (!validProviders.includes(provider)) {
-      return res.status(400).json({
-        success: false,
-        error: `Invalid provider. Must be one of: ${validProviders.join(', ')}`
-      });
-    }
-
-    // Generate OAuth URL with dynamic redirect URI
-    const redirectUri = `${getApiBaseUrl(req)}/api/rclone/oauth/callback`;
-    const { authUrl, state } = oauthService.generateAuthUrl(
-      provider as 'google-drive' | 'dropbox' | 'onedrive',
-      remoteName,
-      redirectUri
-    );
-
-    logger.info({ provider, remoteName, state }, 'Generated OAuth authorization URL');
-
-    res.json({
-      success: true,
-      data: {
-        authUrl,
-        state
-      }
-    });
-  } catch (error: any) {
-    logger.error({ error, provider: String(req.params.provider) }, 'Failed to generate OAuth URL');
-    
-    res.status(500).json({
-      success: false,
-      error: 'Failed to generate OAuth authorization URL',
-      details: error.message
-    });
-  }
-});
-
-/**
- * GET /api/rclone/oauth/callback
- * Handle OAuth callback and create remote
- */
-router.get('/oauth/callback', async (req: Request, res: Response) => {
-  try {
-    const { code, state } = req.query;
-
-    if (!code || typeof code !== 'string') {
-      return res.status(400).send(`
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <title>OAuth Error</title>
-            <style>
-              body { font-family: Arial, sans-serif; padding: 40px; text-align: center; }
-              .error { color: #d32f2f; }
-            </style>
-          </head>
-          <body>
-            <h1 class="error">OAuth Error</h1>
-            <p>Missing authorization code</p>
-            <script>
-              if (window.opener) {
-                window.opener.postMessage({ 
-                  type: 'oauth-error', 
-                  error: 'Missing authorization code' 
-                }, '*');
-                setTimeout(() => window.close(), 2000);
-              }
-            </script>
-          </body>
-        </html>
-      `);
-    }
-
-    if (!state || typeof state !== 'string') {
-      return res.status(400).send(`
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <title>OAuth Error</title>
-            <style>
-              body { font-family: Arial, sans-serif; padding: 40px; text-align: center; }
-              .error { color: #d32f2f; }
-            </style>
-          </head>
-          <body>
-            <h1 class="error">OAuth Error</h1>
-            <p>Missing state token</p>
-            <script>
-              if (window.opener) {
-                window.opener.postMessage({ 
-                  type: 'oauth-error', 
-                  error: 'Missing state token' 
-                }, '*');
-                setTimeout(() => window.close(), 2000);
-              }
-            </script>
-          </body>
-        </html>
-      `);
-    }
-
-    try {
-      // Handle OAuth callback - this will exchange code for tokens and create remote
-      const remote = await oauthService.handleCallback(code, state);
-
-      // Create account entry for the remote
-      const providerTypeMap: Record<string, ProviderType> = {
-        'drive': ProviderType.GOOGLE_DRIVE,
-        'dropbox': ProviderType.DROPBOX,
-        'onedrive': ProviderType.ONEDRIVE
-      };
-
-      const providerType = providerTypeMap[remote.type] || remote.type as ProviderType;
-
-      await rcloneIntegrationService.createRemoteWithAccount({
-        remoteName: remote.name,
-        providerType,
-        remoteConfig: remote,
-        accountIdentifier: remote.name
-      });
-
-      logger.info({ remoteName: remote.name, provider: remote.type }, 'OAuth callback successful');
-
-      // Return success HTML that closes popup and notifies parent
-      res.send(`
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <title>OAuth Success</title>
-            <style>
-              body { font-family: Arial, sans-serif; padding: 40px; text-align: center; }
-              .success { color: #388e3c; }
-            </style>
-          </head>
-          <body>
-            <h1 class="success">Authorization Successful!</h1>
-            <p>You can close this window now.</p>
-            <script>
-              if (window.opener) {
-                window.opener.postMessage({ 
-                  type: 'oauth-success', 
-                  remoteName: '${remote.name}',
-                  provider: '${remote.type}'
-                }, '*');
-                setTimeout(() => window.close(), 1000);
-              }
-            </script>
-          </body>
-        </html>
-      `);
-    } catch (callbackError: any) {
-      logger.error({ error: callbackError, code, state }, 'OAuth callback failed');
-
-      const errorMessage = callbackError.message || 'Token exchange failed';
-
-      res.status(400).send(`
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <title>OAuth Error</title>
-            <style>
-              body { font-family: Arial, sans-serif; padding: 40px; text-align: center; }
-              .error { color: #d32f2f; }
-            </style>
-          </head>
-          <body>
-            <h1 class="error">Authorization Failed</h1>
-            <p>${errorMessage}</p>
-            <script>
-              if (window.opener) {
-                window.opener.postMessage({ 
-                  type: 'oauth-error', 
-                  error: '${errorMessage.replace(/'/g, "\\'")}' 
-                }, '*');
-                setTimeout(() => window.close(), 3000);
-              }
-            </script>
-          </body>
-        </html>
-      `);
-    }
-  } catch (error: any) {
-    logger.error({ error }, 'Unexpected error in OAuth callback');
-    
-    res.status(500).send(`
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <title>OAuth Error</title>
-          <style>
-            body { font-family: Arial, sans-serif; padding: 40px; text-align: center; }
-            .error { color: #d32f2f; }
-          </style>
-        </head>
-        <body>
-          <h1 class="error">Unexpected Error</h1>
-          <p>An unexpected error occurred. Please try again.</p>
-          <script>
-            if (window.opener) {
-              window.opener.postMessage({ 
-                type: 'oauth-error', 
-                error: 'Unexpected error occurred' 
-              }, '*');
-              setTimeout(() => window.close(), 3000);
-            }
-          </script>
-        </body>
-      </html>
-    `);
   }
 });
 

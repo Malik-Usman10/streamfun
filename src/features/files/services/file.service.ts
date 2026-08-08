@@ -4,7 +4,6 @@ import { AccountRotator } from '../../accounts/services/account-rotator.service.
 import { ProviderFactory } from '../../storage/providers/provider.factory.js';
 import { TokenManager } from '../../accounts/services/token-manager.service.js';
 import { BandwidthTracker } from '../../accounts/services/bandwidth-tracker.service.js';
-import { FileEncryptionService } from '../../../shared/services/file-encryption.service.js';
 import { CacheService } from '../../../shared/services/cache.service.js';
 import { ThumbnailService } from './thumbnail.service.js';
 import type { ChunkManager } from './chunk-manager.service.js';
@@ -21,7 +20,6 @@ export class FileService {
     private providerFactory: ProviderFactory,
     private tokenManager: TokenManager,
     private bandwidthTracker: BandwidthTracker,
-    private encryptionService: FileEncryptionService,
     private chunkManager?: ChunkManager,
     private thumbnailService: ThumbnailService = new ThumbnailService(),
     private cacheService: CacheService = new CacheService()
@@ -30,7 +28,6 @@ export class FileService {
   async uploadFile(
     providerType: ProviderType,
     file: FileUpload,
-    encrypt: boolean = true,
     signal?: AbortSignal
   ): Promise<FileRecord> {
     logger.info({ filename: file.filename, size: file.size, providerType }, 'Starting file upload');
@@ -42,22 +39,9 @@ export class FileService {
     // Ensure token is fresh
     await this.tokenManager.refreshIfNeeded(account, provider);
     
-    let encryptionKey: string | undefined;
-    let encryptionIv: string | undefined;
-    let uploadStream = file.stream;
-    
-    // Encrypt file if requested
-    if (encrypt) {
-      const encrypted = await this.encryptionService.encryptFile(file.stream, file.filename);
-      uploadStream = encrypted.encryptedStream;
-      encryptionKey = encrypted.encryptionKey;
-      encryptionIv = encrypted.iv;
-    }
-    
     // Upload with retry
     const result = await this.uploadWithRetry(provider, account, {
       ...file,
-      stream: uploadStream,
     }, 3, signal);
     
     // Store metadata
@@ -69,8 +53,6 @@ export class FileService {
       accountId: account.id,
       providerFileId: result.providerFileId,
       isChunked: false,
-      encryptionKey,
-      encryptionIv,
       metadata: file.metadata,
       uploadedAt: result.uploadedAt,
     });
@@ -88,7 +70,6 @@ export class FileService {
     providerType: ProviderType,
     url: string,
     filename: string,
-    encrypt: boolean = false,
     signal?: AbortSignal
   ): Promise<FileRecord> {
     logger.info({ url, filename, providerType }, 'Starting URL upload');
@@ -103,11 +84,9 @@ export class FileService {
     let providerFileId = filename;
     let finalSize = 0;
     let mimeType = 'application/octet-stream';
-    let encryptionKey: string | undefined;
-    let encryptionIv: string | undefined;
 
-    // If unencrypted AND the provider supports uploadFromUrl, let the provider do it directly 
-    if (!encrypt && provider.uploadFromUrl) {
+    // If the provider supports uploadFromUrl, let the provider do it directly.
+    if (provider.uploadFromUrl) {
       logger.info({ url, providerName: provider.providerName }, 'Delegating URL upload directly to provider (bypassing stream constraints)');
       
       const result = await provider.uploadFromUrl(account, url, filename, signal);
@@ -116,7 +95,7 @@ export class FileService {
       // If we need the real size, we might have to fetch it explicitly here, 
       // but for bypassing, we skip downloading the size.
     } else {
-      logger.info({ url, encrypt }, 'Downloading URL to server stream before upload');
+      logger.info({ url }, 'Downloading URL to server stream before upload');
       const response = await fetch(url, { signal } as RequestInit);
       
       if (!response.ok || !response.body) {
@@ -126,21 +105,11 @@ export class FileService {
       finalSize = parseInt(response.headers.get('content-length') || '0', 10);
       mimeType = response.headers.get('content-type') || mimeType;
 
-      let uploadStream = response.body;
-      
-      // Encrypt file if requested
-      if (encrypt) {
-        const encrypted = await this.encryptionService.encryptFile(uploadStream, filename);
-        uploadStream = encrypted.encryptedStream;
-        encryptionKey = encrypted.encryptionKey;
-        encryptionIv = encrypted.iv;
-      }
-      
       const file: FileUpload = {
         filename,
         mimeType,
         size: finalSize,
-        stream: uploadStream
+        stream: response.body
       };
 
       const result = await this.uploadWithRetry(provider, account, file, 3, signal);
@@ -156,8 +125,6 @@ export class FileService {
       accountId: account.id,
       providerFileId,
       isChunked: false,
-      encryptionKey,
-      encryptionIv,
       uploadedAt: new Date(),
     });
     
@@ -232,11 +199,6 @@ export class FileService {
     
     let stream = await provider.downloadFile(account, file.providerFileId, signal);
     
-    // Decrypt if encrypted
-    if (file.encryptionKey && file.encryptionIv) {
-      stream = await this.encryptionService.decryptFile(stream, file.encryptionKey, file.encryptionIv);
-    }
-    
     // Cache the completely built and decrypted stream in Redis (only for full downloads)
     if (!rangeStart && !rangeEnd) {
       stream = this.cacheService.cacheStream(cacheKey, stream, 21600);
@@ -277,43 +239,7 @@ export class FileService {
       }
       
       const provider = this.providerFactory.getProvider(chunk.providerType);
-      let stream = await provider.downloadFile(account, chunk.providerFileId);
-      
-      // Decrypt if encrypted
-      if (file.encryptionKey && file.encryptionIv) {
-        logger.debug({ fileId, hasEncryption: true }, 'File is encrypted, decrypting single chunk');
-        
-        const reader = stream.getReader();
-        const chunks: Uint8Array[] = [];
-        
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          chunks.push(value);
-        }
-        
-        const encryptedData = Buffer.concat(chunks);
-        logger.debug({ 
-          fileId, 
-          encryptedSize: encryptedData.length,
-          keyLength: file.encryptionKey.length,
-          ivLength: file.encryptionIv.length 
-        }, 'About to decrypt single chunk');
-        
-        const decryptedData = await this.encryptionService.decryptChunk(
-          encryptedData,
-          file.encryptionKey,
-          file.encryptionIv,
-          0 // chunk index 0
-        );
-        
-        stream = new ReadableStream({
-          start(controller) {
-            controller.enqueue(decryptedData);
-            controller.close();
-          },
-        });
-      }
+      const stream = await provider.downloadFile(account, chunk.providerFileId);
       
       await this.bandwidthTracker.recordUsage(account.id, 'download', file.size);
       

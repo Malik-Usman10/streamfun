@@ -1,6 +1,5 @@
 // File lock manager for concurrent access control
-import fs from 'fs/promises';
-import logger from './logger.js';
+import logger from "./logger.js";
 
 export class FileLockManager {
   private locks: Map<string, Promise<void>> = new Map();
@@ -14,7 +13,7 @@ export class FileLockManager {
     while (this.locks.has(filePath)) {
       await this.locks.get(filePath);
       // Small delay to prevent tight loop
-      await new Promise(resolve => setTimeout(resolve, 10));
+      await new Promise((resolve) => setTimeout(resolve, 10));
     }
 
     // Create a new lock promise
@@ -25,13 +24,13 @@ export class FileLockManager {
 
     this.locks.set(filePath, lockPromise);
 
-    logger.debug({ filePath }, 'Acquired file lock');
+    logger.debug({ filePath }, "Acquired file lock");
 
     // Return the release function
     return () => {
       this.locks.delete(filePath);
       releaseLock!();
-      logger.debug({ filePath }, 'Released file lock');
+      logger.debug({ filePath }, "Released file lock");
     };
   }
 

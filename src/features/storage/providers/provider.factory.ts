@@ -14,10 +14,7 @@ export class ProviderFactory {
   }
 
   private registerProviders(): void {
-    // Register rclone-based providers (supports all cloud storage via rclone)
-    this.providers.set(ProviderType.GOOGLE_DRIVE, new RcloneStorageProvider(ProviderType.GOOGLE_DRIVE));
     this.providers.set(ProviderType.KOOFR, new RcloneStorageProvider(ProviderType.KOOFR));
-    this.providers.set(ProviderType.TERABOX, new RcloneStorageProvider(ProviderType.TERABOX));
     this.providers.set(ProviderType.FILEN, new RcloneStorageProvider(ProviderType.FILEN));
     this.providers.set(ProviderType.BLOMP, new RcloneStorageProvider(ProviderType.BLOMP));
     

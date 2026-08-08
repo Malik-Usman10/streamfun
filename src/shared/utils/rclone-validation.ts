@@ -165,10 +165,6 @@ export function validateProviderType(providerType: string): ValidationResult {
   const validProviders = [
     'rclone',
     'mock',
-    'google-drive',
-    'dropbox',
-    'onedrive',
-    'webdav',
     'blomp',
     'filen',
     'koofr',

@@ -525,12 +525,6 @@ class FullPageDashboard {
             </small>
           </div>
           
-          <div class="form-group">
-            <label class="checkbox-label">
-              <input type="checkbox" id="encrypt-checkbox" checked>
-              <span>Encrypt files</span>
-            </label>
-          </div>
         </div>
         
         <div class="upload-progress" id="upload-progress" style="display: none; margin-top: 24px;">
@@ -690,7 +684,6 @@ class FullPageDashboard {
     }
 
     const providerSelect = this.container.querySelector('#provider-select');
-    const encryptCheckbox = this.container.querySelector('#encrypt-checkbox');
     const categorySelect = this.container.querySelector('#category-select');
     const collectionInput = this.container.querySelector('#collection-input');
     const uploadProgress = this.container.querySelector('#upload-progress');
@@ -709,8 +702,7 @@ class FullPageDashboard {
     }
 
     const options = {
-      provider: providerSelect?.value || 'google_drive',
-      encrypt: encryptCheckbox?.checked ?? true,
+      provider: providerSelect?.value || 'koofr',
       collectionName
     };
 

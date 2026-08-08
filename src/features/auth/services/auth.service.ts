@@ -11,9 +11,7 @@ export class AuthService {
 
   constructor() {
     this.settingsRepository = new SettingsRepository();
-    // In production, you would definitely want a properly configured secret
-    // For this app, we're using the master key as a fallback
-    this.jwtSecret = appConfig.encryption.fileMasterKey;
+    this.jwtSecret = appConfig.auth.jwtSecret;
   }
 
   /**

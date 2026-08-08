@@ -218,10 +218,6 @@ class RemoteDetailsModal {
    */
   formatProviderName(type) {
     const names = {
-      'drive': 'Google Drive',
-      'dropbox': 'Dropbox',
-      'onedrive': 'OneDrive',
-      'webdav': 'WebDAV',
       'koofr': 'Koofr',
       'blomp': 'Blomp',
       'filen': 'Filen'

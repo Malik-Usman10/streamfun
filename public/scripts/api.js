@@ -231,8 +231,7 @@ const api = {
    */
   async uploadFile(file, options = {}, onProgress = null) {
     const {
-      provider = 'google_drive',
-      encrypt = true,
+      provider = 'koofr',
       collectionName = null
     } = options;
 
@@ -245,8 +244,7 @@ const api = {
       size: file.size,
       chunkSize: chunkSize,
       provider: provider,
-      mimeType: file.type,
-      encrypt: encrypt
+      mimeType: file.type
     };
 
     if (collectionName) {

@@ -1,5 +1,5 @@
 // BullMQ-based auto-upload queue and worker
-// Processes scan_jobs: reads files from disk, encrypts, chunks, and uploads to cloud storage
+// Processes scan_jobs: reads files from disk, chunks, and uploads to cloud storage
 import { Queue, Worker, type Job } from 'bullmq';
 import { createReadStream, statSync } from 'fs';
 import { access, readdir } from 'fs/promises';
@@ -466,7 +466,6 @@ export class AutoUploadQueue {
               totalChunks,
               providerType,
               mimeType,
-              encrypt: true,
               collectionName,
               accountId: selectedAccountId,
             });

@@ -21,7 +21,6 @@ import { SettingsRepository } from './features/backup/repositories/settings.repo
 
 // Services
 import { EncryptionService } from './shared/services/encryption.service.js';
-import { FileEncryptionService } from './shared/services/file-encryption.service.js';
 import { TokenManager } from './features/accounts/services/token-manager.service.js';
 import { BandwidthTracker } from './features/accounts/services/bandwidth-tracker.service.js';
 import { AccountRotator } from './features/accounts/services/account-rotator.service.js';
@@ -74,7 +73,6 @@ export function createApp() {
   const settingsRepository = new SettingsRepository();
 
   const encryptionService = new EncryptionService();
-  const fileEncryptionService = new FileEncryptionService();
   const cacheService = new CacheService();
   const bandwidthTracker = new BandwidthTracker();
 
@@ -95,8 +93,7 @@ export function createApp() {
     fileRepository,
     accountSelector,
     accountRotator,
-    providerFactory,
-    fileEncryptionService
+    providerFactory
   );
 
   const fileService = new FileService(
@@ -105,7 +102,6 @@ export function createApp() {
     providerFactory,
     tokenManager,
     bandwidthTracker,
-    fileEncryptionService,
     chunkManager
   );
 

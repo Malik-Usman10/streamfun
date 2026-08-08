@@ -5,7 +5,6 @@ import { FileRepository } from '../repositories/file.repository.js';
 import { AccountSelector } from '../../accounts/services/account-selector.service.js';
 import { AccountRotator } from '../../accounts/services/account-rotator.service.js';
 import { ProviderFactory } from '../../storage/providers/provider.factory.js';
-import { FileEncryptionService } from '../../../shared/services/file-encryption.service.js';
 import { ThumbnailService } from './thumbnail.service.js';
 import { CacheService } from '../../../shared/services/cache.service.js';
 import { ConcurrencyLimiter } from '../../../shared/utils/concurrency-limiter.js';
@@ -33,8 +32,6 @@ interface UploadMetadata {
   totalChunks: number;
   providerType: ProviderType;
   mimeType?: string;
-  encryptionKey?: string;
-  iv?: string;
   uploadedChunks: number[];
   category?: string;
   collectionName?: string;
@@ -56,8 +53,7 @@ export class ChunkManager {
     private fileRepository: FileRepository,
     private accountSelector: AccountSelector,
     private accountRotator: AccountRotator,
-    private providerFactory: ProviderFactory,
-    private encryptionService: FileEncryptionService
+    private providerFactory: ProviderFactory
   ) {
     this.uploadLimiter = new ConcurrencyLimiter(appConfig.upload.maxParallelChunks);
     this.downloadLimiter = new ConcurrencyLimiter(appConfig.upload.maxParallelDownloads);
@@ -75,9 +71,6 @@ export class ChunkManager {
 
     logger.info({ fileId, totalChunks, size: file.size }, 'Starting chunked upload');
 
-    // Generate encryption key for entire file
-    const { encryptionKey, iv } = await this.encryptionService.generateFileKey();
-
     const chunks: Omit<ChunkMetadata, 'id'>[] = [];
 
     // Upload chunks with limited concurrency
@@ -89,7 +82,7 @@ export class ChunkManager {
       for (let j = 0; j < concurrency && i + j < totalChunks; j++) {
         const chunkIndex = i + j;
         chunkPromises.push(
-          this.uploadChunk(file, fileId, chunkIndex, chunkSize, providerType, encryptionKey, iv)
+          this.uploadChunk(file, fileId, chunkIndex, chunkSize, providerType)
         );
       }
 
@@ -113,8 +106,6 @@ export class ChunkManager {
       size: file.size,
       totalChunks,
       chunkSize,
-      encryptionKey,
-      iv,
       chunks,
     });
 
@@ -128,9 +119,7 @@ export class ChunkManager {
     fileId: string,
     chunkIndex: number,
     chunkSize: number,
-    providerType: ProviderType,
-    encryptionKey: string,
-    iv: string
+    providerType: ProviderType
   ): Promise<Omit<ChunkMetadata, 'id'>> {
     // Select account for this chunk
     const account = await this.accountRotator.selectAccountForUpload(providerType, chunkSize);
@@ -144,20 +133,12 @@ export class ChunkManager {
     // In production, you'd want to properly handle stream slicing
     const chunkData = Buffer.alloc(actualChunkSize);
 
-    // Encrypt chunk
-    const encryptedChunk = await this.encryptionService.encryptChunk(
-      chunkData,
-      encryptionKey,
-      iv,
-      chunkIndex
-    );
-
     // Upload to provider
     const provider = this.providerFactory.getProvider(providerType);
 
     const chunkStream = new ReadableStream({
       start(controller) {
-        controller.enqueue(encryptedChunk);
+        controller.enqueue(chunkData);
         controller.close();
       },
     });
@@ -165,7 +146,7 @@ export class ChunkManager {
     const result = await provider.uploadFile(account, {
       filename: `${fileId}_chunk_${chunkIndex}`,
       mimeType: 'application/octet-stream',
-      size: encryptedChunk.length,
+      size: chunkData.length,
       stream: chunkStream,
     }, undefined); // Note: internal background upload currently doesn't use a signal
 
@@ -246,35 +227,22 @@ export class ChunkManager {
         throw new Error(`Account not found: ${chunk.accountId}`);
       }
 
-      // 1. Get encrypted stream from provider
       // Use download-specific concurrency limiter to avoid starving uploads
-      const getEncryptedStream = async () => {
+      const getChunkStream = async () => {
         return await this.downloadLimiter.run(async () => {
           if (signal.aborted) throw new Error('Stream aborted');
           return await provider.downloadFile(account, chunk.providerFileId, signal);
         });
       };
 
-      const encryptedStream = await getEncryptedStream();
+      const chunkStream = await getChunkStream();
       if (signal.aborted) {
-        encryptedStream.cancel().catch(() => {});
+        chunkStream.cancel().catch(() => {});
         throw new Error('Stream aborted');
       }
 
-      // 2. Wrap it with streaming decryption
-      let decryptedStream = encryptedStream;
-      if (fileRecord.encryptionKey && fileRecord.iv) {
-        decryptedStream = await this.encryptionService.decryptChunkStream(
-          encryptedStream,
-          fileRecord.encryptionKey,
-          fileRecord.iv,
-          chunkIndex,
-          fileRecord.chunkSize
-        );
-      }
-
-      // 3. Wrap it in cache proxy so it gets saved to Redis memory automatically as it flows
-      return this.cacheService.cacheStream(cacheKey, decryptedStream, this.chunkCacheTTL);
+      // Wrap it in cache proxy so it gets saved to Redis memory automatically as it flows
+      return this.cacheService.cacheStream(cacheKey, chunkStream, this.chunkCacheTTL);
     };
 
     const prefetchPromises: Map<number, Promise<ReadableStream>> = new Map();
@@ -373,7 +341,7 @@ export class ChunkManager {
                 chunkStartPos, 
                 chunkEndPos, 
                 len: value.length 
-              }, 'Processing decrypted slice');
+              }, 'Processing chunk slice');
 
               const start = rangeStart !== undefined ? rangeStart : 0;
               const end = rangeEnd !== undefined ? rangeEnd : Infinity;
@@ -487,8 +455,6 @@ export class ChunkManager {
       totalChunks: params.totalChunks,
       providerType: fileRecord.providerType!,
       mimeType: fileRecord.mimeType,
-      encryptionKey: fileRecord.encryptionKey || undefined,
-      iv: fileRecord.encryptionIv || undefined,
       uploadedChunks: [], 
       category: fileRecord.category || undefined,
       collectionName: fileRecord.collectionName || undefined,
@@ -503,23 +469,12 @@ export class ChunkManager {
     totalChunks: number;
     providerType: ProviderType;
     mimeType?: string;
-    encrypt: boolean;
     collectionName?: string;
     accountId?: string;
   }): Promise<string> {
     const fileId = uuidv4();
 
     logger.info({ fileId, filename: params.filename, totalChunks: params.totalChunks }, 'Initializing chunked upload');
-
-    // Generate encryption key if needed
-    let encryptionKey: string | undefined;
-    let iv: string | undefined;
-
-    if (params.encrypt) {
-      const keyData = await this.encryptionService.generateFileKey();
-      encryptionKey = keyData.encryptionKey;
-      iv = keyData.iv;
-    }
 
     // Detect category from MIME type
     const category = detectCategory(params.mimeType);
@@ -557,8 +512,6 @@ export class ChunkManager {
       accountId: account.id,
       providerFileId: fileId,
       isChunked: true,
-      encryptionKey: encryptionKey,
-      encryptionIv: iv,
       category,
       collectionName,
       chunkSize: params.chunkSize,
@@ -573,8 +526,6 @@ export class ChunkManager {
       totalChunks: params.totalChunks,
       providerType: params.providerType,
       mimeType: params.mimeType,
-      encryptionKey,
-      iv,
       uploadedChunks: [],
       category,
       collectionName,
@@ -616,16 +567,7 @@ export class ChunkManager {
 
     const chunkData = new Uint8Array(Buffer.concat(chunks));
 
-    // Encrypt chunk if encryption is enabled
-    let dataToUpload: Uint8Array = chunkData;
-    if (metadata.encryptionKey && metadata.iv) {
-      dataToUpload = await this.encryptionService.encryptChunk(
-        Buffer.from(chunkData),
-        metadata.encryptionKey,
-        metadata.iv,
-        chunkIndex
-      );
-    }
+    const dataToUpload = chunkData;
 
     // Use the account that was already selected during initialization
     const account = await this.accountRepository.findById(metadata.accountId);

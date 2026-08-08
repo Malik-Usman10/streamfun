@@ -12,8 +12,6 @@ export interface CreateFileData {
   accountId: string;
   providerFileId: string;
   isChunked?: boolean;
-  encryptionKey?: string;
-  encryptionIv?: string;
   category?: string;
   collectionName?: string;
   thumbnailData?: string;
@@ -36,13 +34,13 @@ export class FileRepository {
     const query = data.id
       ? `INSERT INTO files 
          (id, filename, mime_type, size, provider_type, account_id, provider_file_id, 
-          is_chunked, encryption_key, encryption_iv, category, collection_name, chunk_size, thumbnail_data, metadata, uploaded_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+          is_chunked, category, collection_name, chunk_size, thumbnail_data, metadata, uploaded_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
          RETURNING *`
       : `INSERT INTO files 
          (filename, mime_type, size, provider_type, account_id, provider_file_id, 
-          is_chunked, encryption_key, encryption_iv, category, collection_name, chunk_size, thumbnail_data, metadata, uploaded_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+          is_chunked, category, collection_name, chunk_size, thumbnail_data, metadata, uploaded_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
          RETURNING *`;
 
     const params = data.id
@@ -55,8 +53,6 @@ export class FileRepository {
         data.accountId,
         data.providerFileId,
         data.isChunked || false,
-        data.encryptionKey,
-        data.encryptionIv,
         data.category,
         data.collectionName,
         data.chunkSize || 10485760,
@@ -72,8 +68,6 @@ export class FileRepository {
         data.accountId,
         data.providerFileId,
         data.isChunked || false,
-        data.encryptionKey,
-        data.encryptionIv,
         data.category,
         data.collectionName,
         data.chunkSize || 10485760,
@@ -298,8 +292,6 @@ export class FileRepository {
       accountId: row.account_id,
       providerFileId: row.provider_file_id,
       isChunked: row.is_chunked,
-      encryptionKey: row.encryption_key,
-      encryptionIv: row.encryption_iv,
       category: row.category,
       collectionName: row.collection_name,
       chunkSize: row.chunk_size,

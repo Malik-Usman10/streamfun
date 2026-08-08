@@ -11,7 +11,7 @@ export function createChunkedUploadRoutes(chunkManager: ChunkManager, accountSer
   // Initialize chunked upload
   router.post('/init', async (req, res, next) => {
     try {
-      const { filename, size, chunkSize, provider, mimeType, encrypt = true, collectionName } = req.body;
+      const { filename, size, chunkSize, provider, mimeType, collectionName } = req.body;
 
       if (!filename || !size || !provider) {
         return res.status(400).json({
@@ -21,9 +21,7 @@ export function createChunkedUploadRoutes(chunkManager: ChunkManager, accountSer
 
       // Validate and convert provider string to ProviderType
       const providerMap: Record<string, ProviderType> = {
-        'google_drive': ProviderType.GOOGLE_DRIVE,
         'koofr': ProviderType.KOOFR,
-        'terabox': ProviderType.TERABOX,
         'filen': ProviderType.FILEN,
         'blomp': ProviderType.BLOMP,
       };
@@ -31,7 +29,7 @@ export function createChunkedUploadRoutes(chunkManager: ChunkManager, accountSer
       const providerType = providerMap[provider];
       if (!providerType) {
         return res.status(400).json({
-          error: `Invalid provider: ${provider}. Valid providers: google_drive, koofr, terabox, filen, blomp`
+          error: `Invalid provider: ${provider}. Valid providers: koofr, filen, blomp`
         });
       }
 
@@ -46,7 +44,6 @@ export function createChunkedUploadRoutes(chunkManager: ChunkManager, accountSer
         totalChunks,
         providerType,
         mimeType,
-        encrypt,
         collectionName,
       });
 
@@ -164,7 +161,7 @@ export function createChunkedUploadRoutes(chunkManager: ChunkManager, accountSer
           filename: file.filename,
           size: file.size,
           provider: file.providerType,
-          encrypted: !!file.encryptionKey,
+          encrypted: false,
           uploadedAt: file.uploadedAt,
         },
       });

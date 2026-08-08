@@ -10,8 +10,6 @@ export interface ChunkedFileRecord {
   size: number;
   totalChunks: number;
   chunkSize: number;
-  encryptionKey: string;
-  iv: string;
   chunks: ChunkMetadata[];
   metadata?: Record<string, any>;
 }
@@ -73,8 +71,6 @@ export class ChunkRepository {
     size: number;
     totalChunks: number;
     chunkSize: number;
-    encryptionKey: string;
-    iv: string;
     chunks: Omit<ChunkMetadata, 'id'>[];
   }): Promise<void> {
     const client = await pool.connect();
@@ -113,7 +109,7 @@ export class ChunkRepository {
 
   async getChunkedFile(fileId: string): Promise<ChunkedFileRecord | null> {
     const fileResult = await pool.query(
-      `SELECT filename, mime_type, size, encryption_key, encryption_iv, metadata 
+      `SELECT filename, mime_type, size, metadata 
        FROM files WHERE id = $1 AND is_chunked = true`,
       [fileId]
     );
@@ -128,20 +124,13 @@ export class ChunkRepository {
     // Default to a sane chunk size if no chunks exist yet (e.g. from appConfig)
     const storedChunkSize = chunks.length > 0 ? chunks[0].chunkSize : 10 * 1024 * 1024;
     
-    // Correct chunk size if encrypted (stored size includes 16-byte auth tag)
-    const decryptedChunkSize = (file.encryption_key && storedChunkSize > 16) 
-      ? storedChunkSize - 16 
-      : storedChunkSize;
-    
     return {
       fileId,
       filename: file.filename,
       mimeType: file.mime_type,
       size: Number(file.size),
       totalChunks: chunks.length,
-      chunkSize: decryptedChunkSize,
-      encryptionKey: file.encryption_key,
-      iv: file.encryption_iv,
+      chunkSize: storedChunkSize,
       chunks,
       metadata: file.metadata,
     };

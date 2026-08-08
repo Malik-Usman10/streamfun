@@ -4,7 +4,6 @@
  */
 
 import { trapFocus, showError, showSuccess } from '../utils/dom.js';
-import OAuthPopupManager from '../utils/oauth-popup.js';
 
 class RemoteConfigWizard {
   constructor() {
@@ -12,7 +11,6 @@ class RemoteConfigWizard {
     this.focusTrap = null;
     this.onComplete = null;
     this.onCancel = null;
-    this.oauthPopup = new OAuthPopupManager();
     
     // Wizard state
     this.currentStep = 'provider-selection';
@@ -196,36 +194,6 @@ class RemoteConfigWizard {
         <p class="step-description">Choose the cloud storage service you want to connect</p>
         
         <div class="provider-grid">
-          <button class="provider-card" data-provider="google-drive">
-            <div class="provider-icon">
-              <svg viewBox="0 0 24 24" fill="currentColor">
-                <path d="M12.01 1.485L6.01 11.5h12l-6-10.015zM1.99 13.5l6 10.015 6-10.015h-12zm8.01-2L4 21.515h16L14.01 11.5H10z"/>
-              </svg>
-            </div>
-            <h4>Google Drive</h4>
-            <p>OAuth authentication</p>
-          </button>
-          
-          <button class="provider-card" data-provider="dropbox">
-            <div class="provider-icon">
-              <svg viewBox="0 0 24 24" fill="currentColor">
-                <path d="M6 1.807L0 5.629l6 3.822 6.001-3.822L6 1.807zM18 1.807l-6 3.822 6 3.822 6-3.822-6-3.822zM0 13.274l6 3.822 6.001-3.822L6 9.452 0 13.274zm18 0l-6 3.822 6 3.822 6-3.822-6-3.822zM6 18.371l6.001 3.822 6-3.822-6-3.822L6 18.371z"/>
-              </svg>
-            </div>
-            <h4>Dropbox</h4>
-            <p>OAuth authentication</p>
-          </button>
-          
-          <button class="provider-card" data-provider="onedrive">
-            <div class="provider-icon">
-              <svg viewBox="0 0 24 24" fill="currentColor">
-                <path d="M13.5 7.5c-1.5-3-4.5-5-8-5-4.5 0-8 3.5-8 8 0 .5 0 1 .1 1.5C.5 13 1.5 14 3 14.5h15c2.5 0 4.5-2 4.5-4.5S20.5 5.5 18 5.5c-.5 0-1 .1-1.5.2-.5-1.5-1.5-2.7-3-3.2z"/>
-              </svg>
-            </div>
-            <h4>OneDrive</h4>
-            <p>OAuth authentication</p>
-          </button>
-          
           <button class="provider-card" data-provider="blomp">
             <div class="provider-icon">
               <svg viewBox="0 0 24 24" fill="currentColor">
@@ -345,24 +313,7 @@ class RemoteConfigWizard {
     let providerFields = '';
 
     // Render provider-specific fields
-    if (provider === 'google-drive' || provider === 'dropbox' || provider === 'onedrive') {
-      // OAuth providers
-      providerFields = `
-        <div class="oauth-info">
-          <div class="info-box">
-            <svg class="info-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="10"></circle>
-              <line x1="12" y1="16" x2="12" y2="12"></line>
-              <line x1="12" y1="8" x2="12.01" y2="8"></line>
-            </svg>
-            <div>
-              <h4>OAuth Authentication</h4>
-              <p>You'll be redirected to ${this.getProviderDisplayName()} to authorize access. No credentials are stored locally.</p>
-            </div>
-          </div>
-        </div>
-      `;
-    } else if (provider === 'blomp') {
+    if (provider === 'blomp') {
       // Blomp — OpenStack Swift
       providerFields = `
         <div class="form-group">
@@ -514,13 +465,7 @@ class RemoteConfigWizard {
     const provider = this.wizardData.provider;
 
     try {
-      if (provider === 'blomp' || provider === 'filen' || provider === 'koofr') {
-        // Native rclone providers — validate directly
-        await this.validateNativeConnection();
-      } else if (provider === 'google-drive' || provider === 'dropbox' || provider === 'onedrive') {
-        // OAuth providers
-        await this.initiateOAuthFlow();
-      }
+      await this.validateNativeConnection();
     } catch (error) {
       console.error('Validation error:', error);
       showError(`Validation failed: ${error.message}`);
@@ -594,96 +539,6 @@ class RemoteConfigWizard {
   }
 
   /**
-   * @deprecated — not used by Blomp/Filen/Koofr; kept for any true WebDAV remotes
-   */
-  async validateWebDAVConnection() {
-    const remoteName = this.wizardData.remoteName;
-    const providerType = 'webdav';
-    const config = {
-      url: this.wizardData.config.url,
-      user: this.wizardData.config.user,
-      pass: this.wizardData.config.pass,
-      vendor: 'other',
-      remotePath: this.wizardData.config.remotePath || ''
-    };
-
-    try {
-      const response = await fetch(`/api/rclone/remotes/${remoteName}/validate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ providerType, config })
-      });
-
-      const data = await response.json();
-
-      if (data.success && data.valid) {
-        await this.createRemote(remoteName, providerType, config);
-        this.currentStep = 'complete';
-        this.renderStep();
-        this.updateProgress();
-        this.updateButtons();
-      } else {
-        throw new Error(data.errors?.connection || data.error || 'Validation failed');
-      }
-    } catch (error) {
-      throw new Error(`Connection test failed: ${error.message}`);
-    }
-  }
-
-  /**
-   * Initiate OAuth flow
-   */
-  async initiateOAuthFlow() {
-    const remoteName = this.wizardData.remoteName;
-    const provider = this.wizardData.provider;
-
-    try {
-      // First, fetch existing remotes to ensure the name is unique
-      const existingRemotesRes = await fetch('/api/rclone/remotes');
-      const existingRemotesData = await existingRemotesRes.json();
-      if (existingRemotesData.success) {
-        const existingNames = existingRemotesData.data.map(r => r.name);
-        if (existingNames.includes(remoteName)) {
-           throw new Error(`A remote with the name '${remoteName}' already exists.`);
-        }
-      }
-
-      // Get OAuth authorization URL from backend
-      const response = await fetch(`/api/rclone/oauth/authorize/${provider}?remoteName=${encodeURIComponent(remoteName)}`);
-      const data = await response.json();
-
-      if (!data.success) {
-        throw new Error(data.error || 'Failed to get authorization URL');
-      }
-
-      const { authUrl } = data.data;
-
-      // Open OAuth popup and wait for result
-      const result = await this.oauthPopup.open(authUrl, {
-        timeout: 5 * 60 * 1000, // 5 minutes
-        width: 600,
-        height: 700
-      });
-
-      if (result.success) {
-        // OAuth successful, remote was created by the callback
-        this.wizardData.remoteName = result.remoteName;
-        
-        // Move to complete step
-        this.currentStep = 'complete';
-        this.renderStep();
-        this.updateProgress();
-        this.updateButtons();
-      } else {
-        throw new Error('OAuth authentication failed');
-      }
-    } catch (error) {
-      throw new Error(`OAuth authentication failed: ${error.message}`);
-    }
-  }
-
-  /**
    * Create remote via API
    * @param {string} remoteName - Remote name
    * @param {string} providerType - Provider type
@@ -751,9 +606,6 @@ class RemoteConfigWizard {
    */
   getProviderDisplayName() {
     const names = {
-      'google-drive': 'Google Drive',
-      'dropbox': 'Dropbox',
-      'onedrive': 'OneDrive',
       'blomp': 'Blomp',
       'filen': 'Filen',
       'koofr': 'Koofr',
@@ -922,15 +774,6 @@ class RemoteConfigWizard {
     } else if (provider === 'koofr') {
       if (!this.wizardData.config.user) errors.push('Email is required for Koofr');
       if (!this.wizardData.config.password) errors.push('App password is required for Koofr');
-    } else if (provider.startsWith('webdav-')) {
-      // Generic WebDAV validation (kept for any custom WebDAV remotes)
-      if (!this.wizardData.config.url) {
-        errors.push('WebDAV URL is required');
-      } else if (!/^https?:\/\/.+/.test(this.wizardData.config.url)) {
-        errors.push('WebDAV URL must start with http:// or https://');
-      }
-      if (!this.wizardData.config.user) errors.push('Username is required');
-      if (!this.wizardData.config.pass) errors.push('Password is required');
     }
 
     // Show errors if any

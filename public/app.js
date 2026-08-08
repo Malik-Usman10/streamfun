@@ -47,8 +47,7 @@ function switchTab(tabName) {
 // Upload file using chunked upload
 async function uploadFile() {
   const fileInput = document.getElementById('file-input');
-  const provider = document.getElementById('provider-select').value;
-  const encrypt = document.getElementById('encrypt-checkbox').checked;
+  const provider = document.getElementById('provider-select').value || 'koofr';
   const collectionInput = document.getElementById('collection-input');
   const alertDiv = document.getElementById('upload-alert');
   const progressDiv = document.getElementById('upload-progress');
@@ -78,8 +77,7 @@ async function uploadFile() {
       size: file.size,
       chunkSize: chunkSize,
       provider: provider,
-      mimeType: file.type,
-      encrypt: encrypt
+      mimeType: file.type
     };
     
     // Add collection name if provided
@@ -184,7 +182,6 @@ async function loadFiles() {
             <div class="file-name">${escapeHtml(file.filename)}</div>
             <div class="file-meta">
               ${formatBytes(file.size)} • ${file.provider} • 
-              ${file.encrypted ? '🔒 Encrypted' : 'Not encrypted'} • 
               ${new Date(file.uploadedAt).toLocaleString()}
             </div>
           </div>

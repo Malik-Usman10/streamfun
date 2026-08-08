@@ -769,8 +769,7 @@ class MediaPlayer {
     if (this.elements.mediaMeta) {
       const parts = [
         formatBytes(file.size),
-        `Uploaded ${formatDate(file.uploadedAt)}`,
-        file.encrypted ? '🔒 Encrypted' : ''
+        `Uploaded ${formatDate(file.uploadedAt)}`
       ].filter(Boolean);
 
       this.elements.mediaMeta.textContent = parts.join(' • ');

@@ -1,14 +1,9 @@
 // Core type definitions for StreamFun
 
 export enum ProviderType {
-  GOOGLE_DRIVE = 'google_drive',
-  DROPBOX = 'dropbox',
-  ONEDRIVE = 'onedrive',
   KOOFR = 'koofr',
-  TERABOX = 'terabox',
   FILEN = 'filen',
   BLOMP = 'blomp',
-  WEBDAV = 'webdav'
 }
 
 export enum AccountStatus {
@@ -47,8 +42,6 @@ export interface FileRecord {
   accountId: string;
   providerFileId: string;
   isChunked: boolean;
-  encryptionKey?: string;
-  encryptionIv?: string;
   category?: string;
   collectionName?: string;
   chunkSize?: number;
